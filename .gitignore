@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+Package.resolved
+
+# App/build artifacts
+*.app
+*.dmg
+*.pkg
+*.ipa
+*.xcarchive
+
+# Signing and local configuration
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.xcconfig.local
