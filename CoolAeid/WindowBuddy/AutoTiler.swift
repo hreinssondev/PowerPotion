@@ -223,13 +223,7 @@ final class AutoTiler {
     private var windowIDsPendingManualEvaluation: Set<AutoTileWindowID> = []
     private var pendingManualAdjustmentWorkItem: DispatchWorkItem?
     private var appliedFrameByWindowID: [AutoTileWindowID: CGRect] = [:]
-    private var isApplyingTile = false {
-        didSet {
-            if oldValue, !isApplyingTile {
-                captureAppliedFrames()
-            }
-        }
-    }
+    private var isApplyingTile = false
     private var isStarted = false
     private var workspaceObserverTokens: [NSObjectProtocol] = []
     private var observedApplicationsByProcessIdentifier: [pid_t: ObservedApplication] = [:]
@@ -1329,7 +1323,6 @@ final class AutoTiler {
 
         let didActivateMainApps = activateMainAppsRelated(to: [bundleIdentifier],
                                                           excluding: [bundleIdentifier])
-        retileVisibleWindows()
         scheduleFocusedWindowRetile()
 
         if didActivateMainApps {
@@ -1483,12 +1476,18 @@ final class AutoTiler {
                 continue
             }
 
-            // Only re-tile when the window was moved a lot (a deliberate snap or relocation).
-            // Pure resizes and small nudges keep the user's frame and stay out of tiling.
-            if let referenceFrame,
-               windowMovedSignificantly(from: referenceFrame,
-                                        to: window.frame,
-                                        in: window.screenVisibleFrame) {
+            // Only re-tile when the window was moved or resized enough to reshape the tile set.
+            // Small nudges keep the user's frame and stay out of tiling.
+            let shouldReengageWindow: Bool
+            if let referenceFrame {
+                shouldReengageWindow = windowWasReshapedSignificantly(from: referenceFrame,
+                                                                      to: window.frame,
+                                                                      in: window.screenVisibleFrame)
+            } else {
+                shouldReengageWindow = windowHasVisibleTilePeer(window, in: snapshot)
+            }
+
+            if shouldReengageWindow {
                 reengageSnappedWindow(window)
             } else {
                 // Honor the manual frame and use it as the new reference position.
@@ -1515,17 +1514,35 @@ final class AutoTiler {
         }
     }
 
-    private func windowMovedSignificantly(from oldFrame: CGRect,
-                                          to newFrame: CGRect,
-                                          in visibleFrame: CGRect) -> Bool {
+    private func windowWasReshapedSignificantly(from oldFrame: CGRect,
+                                                to newFrame: CGRect,
+                                                in visibleFrame: CGRect) -> Bool {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else {
             return false
         }
 
         let originDistance = hypot(newFrame.minX - oldFrame.minX,
                                    newFrame.minY - oldFrame.minY)
-        let threshold = min(visibleFrame.width, visibleFrame.height) * 0.18
-        return originDistance > threshold
+        let widthDifference = abs(newFrame.width - oldFrame.width)
+        let heightDifference = abs(newFrame.height - oldFrame.height)
+        let movementThreshold = min(visibleFrame.width, visibleFrame.height) * 0.18
+        let resizeThreshold: CGFloat = 6
+        return originDistance > movementThreshold || widthDifference > resizeThreshold || heightDifference > resizeThreshold
+    }
+
+    private func windowHasVisibleTilePeer(_ window: AutoTileWindow,
+                                          in windows: [AutoTileWindow]) -> Bool {
+        let windowGroupIdentifiers = groupIdentifiers(for: window)
+        guard !windowGroupIdentifiers.isEmpty else {
+            return false
+        }
+
+        let windowScreenKey = AutoTileScreenKey(window.screenVisibleFrame)
+        return windows.contains { otherWindow in
+            otherWindow.id != window.id &&
+                AutoTileScreenKey(otherWindow.screenVisibleFrame) == windowScreenKey &&
+                !groupIdentifiers(for: otherWindow).intersection(windowGroupIdentifiers).isEmpty
+        }
     }
 
     private func captureAppliedFrames() {
@@ -1640,6 +1657,7 @@ final class AutoTiler {
             isApplyingTile = true
             let result = mover.restoreAutoTileFrames(forcedTileFramesByWindowID,
                                                      windows: visibleWindows)
+            appliedFrameByWindowID.merge(result.appliedFramesByWindowID) { _, new in new }
             isApplyingTile = false
 
             if result.tiledWindowCount > 0 {
@@ -1687,8 +1705,8 @@ final class AutoTiler {
                 }
 
                 self.pendingScanWorkItem = nil
-                _ = self.scanForNewWindows()
-                if !self.keepsForcedTileLayoutStable {
+                let didObserveWindowChange = self.scanForNewWindows()
+                if didObserveWindowChange, !self.keepsForcedTileLayoutStable {
                     self.scheduleFocusedWindowRetile()
                 }
             }
@@ -1909,6 +1927,7 @@ final class AutoTiler {
         var tiledWindowCount = 0
         var screenKeys: Set<AutoTileScreenKey> = []
         var skippedWindowCount = 0
+        var appliedFramesByWindowID: [AutoTileWindowID: CGRect] = [:]
 
         for groupIdentifier in targetGroupIdentifiers ?? configuredGroupIdentifiers {
             let groupWindows = windows.filter { groupIdentifiers(for: $0).contains(groupIdentifier) }
@@ -1989,6 +2008,7 @@ final class AutoTiler {
             tiledWindowCount += result.tiledWindowCount
             skippedWindowCount += result.skippedWindowCount
             screenKeys.formUnion(groupAffectedScreenFrames.map(AutoTileScreenKey.init))
+            appliedFramesByWindowID.merge(result.appliedFramesByWindowID) { _, new in new }
 
             if result.tiledWindowCount > 0 {
                 let affectedGroupScreenKeys = Set(groupAffectedScreenFrames.map(AutoTileScreenKey.init))
@@ -1998,9 +2018,12 @@ final class AutoTiler {
             }
         }
 
+        self.appliedFrameByWindowID.merge(appliedFramesByWindowID) { _, new in new }
+
         return AutoTileResult(tiledWindowCount: tiledWindowCount,
                               screenCount: screenKeys.count,
-                              skippedWindowCount: skippedWindowCount)
+                              skippedWindowCount: skippedWindowCount,
+                              appliedFramesByWindowID: appliedFramesByWindowID)
     }
 
     private func clearFocusedPrimaryState() {

@@ -12,9 +12,6 @@ struct AnyPIPMenuView: View {
     @EnvironmentObject private var coordinator: AppCoordinator
     @ObservedObject var menuBarIconSelection: MenuBarIconSelection
     @State private var permissionsExpanded = false
-    @State private var autoPiPQuery = ""
-    @State private var highlightedAutoPiPAppID: String?
-    @FocusState private var isAutoPiPSearchFocused: Bool
     var closeMenuBarExtra: (() -> Void)?
     var openDockMoverSettings: (() -> Void)?
     var openWindowBuddySettings: (() -> Void)?
@@ -24,9 +21,7 @@ struct AnyPIPMenuView: View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
                 settingsLaunchCard
-                hotkeyCard
-                hoverSwitchCard
-                autoPiPAppsCard
+                anyPIPCard
                 if shouldShowPermissionsCard {
                     permissionsCard
                 }
@@ -34,13 +29,12 @@ struct AnyPIPMenuView: View {
             }
             .padding(12)
         }
-        .frame(width: 360)
+        .frame(width: 353)
         .background(Color(nsColor: .windowBackgroundColor))
         .background(InitialPopoverFocusView())
         .background(EscapeCloseView(closeMenuBarExtra: closeMenuBarExtra))
         .onAppear {
             coordinator.refreshPermissions()
-            isAutoPiPSearchFocused = false
         }
         .onChange(of: shouldShowPermissionsCard) { _, shouldShow in
             if !shouldShow {
@@ -74,45 +68,76 @@ struct AnyPIPMenuView: View {
                 }
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
+            .controlSize(.regular)
             .padding(10)
             .background(cardBackground)
         }
     }
 
-    private var hotkeyCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            shortcutRow(
-                title: "Start / Stop PiP",
-                mode: primaryShortcutModeBinding,
-                text: primaryShortcutTextBinding,
-                save: savePrimaryShortcut
-            )
-            shortcutRow(
-                title: "Glance / Return to PiP",
-                mode: doubleTapShortcutModeBinding,
-                text: doubleTapShortcutTextBinding,
-                save: saveDoubleTapShortcut
-            )
-        }
-        .padding(12)
-        .background(cardBackground)
-    }
+    private var anyPIPCard: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 10) {
+                Image(systemName: "pip")
+                    .font(.system(size: 14.5, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .controlAccentColor))
+                    .frame(width: 25, height: 25)
+                    .background(Color(nsColor: .controlAccentColor).opacity(0.12), in: Circle())
 
-    private var hoverSwitchCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Toggle(isOn: hoverSwitchBinding) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hover to switch")
+                    Text("AnyPIP")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("When enabled, moving the pointer into the PiP window switches modes instantly.")
+                        .foregroundStyle(.primary)
+                    Text("Toggle any window to a live PIP window")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
+
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 13) {
+                shortcutRow(
+                    title: "Start / Stop PiP",
+                    mode: primaryShortcutModeBinding,
+                    text: primaryShortcutTextBinding,
+                    save: savePrimaryShortcut
+                )
+
+                Divider()
+
+                shortcutRow(
+                    title: "Glance / Return to PiP",
+                    mode: doubleTapShortcutModeBinding,
+                    text: doubleTapShortcutTextBinding,
+                    save: saveDoubleTapShortcut
+                )
+
+                Divider()
+
+                hoverSwitchRow
             }
         }
-        .padding(14)
+        .padding(15)
         .background(cardBackground)
+    }
+
+    private var hoverSwitchRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Toggle("", isOn: hoverSwitchBinding)
+                .toggleStyle(.switch)
+                .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Hover to switch Mode")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Hover PIP window to quickly glance and hover again to return to PiP")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func shortcutRow(
@@ -137,7 +162,7 @@ struct AnyPIPMenuView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .controlSize(.mini)
+            .controlSize(.small)
             .font(.system(size: 11, weight: .semibold))
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -150,13 +175,13 @@ struct AnyPIPMenuView: View {
                     allowsEscapeKey: true,
                     recordsModifiers: recordsModifiers
                 )
-                .frame(height: 29)
+                .frame(height: 30)
                 .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(nsColor: .textBackgroundColor))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.12))
                 )
 
@@ -164,7 +189,7 @@ struct AnyPIPMenuView: View {
                     save()
                 } label: {
                     Label("Save", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
@@ -193,9 +218,9 @@ struct AnyPIPMenuView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 14.5, weight: .semibold))
                     .foregroundStyle(permissionColor)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 25, height: 25)
                     .background(permissionColor.opacity(0.12), in: Circle())
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -215,135 +240,8 @@ struct AnyPIPMenuView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(15)
         .background(cardBackground)
-    }
-
-    private var autoPiPAppsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-                CardHeader(icon: "square.stack.3d.up", title: "Auto PiP Apps", detail: "Automatically goes into PiP when unfocused")
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search apps", text: $autoPiPQuery)
-                        .textFieldStyle(.plain)
-                        .focused($isAutoPiPSearchFocused)
-                        .background(
-                            AutoPiPSearchKeyHandler(
-                                isActive: isAutoPiPSearchFocused && shouldShowAutoPiPSuggestions,
-                                onMoveSelection: moveAutoPiPHighlight,
-                                onCommitSelection: commitHighlightedAutoPiPApp
-                            )
-                        )
-                        .onTapGesture {
-                            if coordinator.availableAutoPiPApps.isEmpty && !coordinator.isRefreshingAutoPiPApps {
-                                coordinator.refreshAvailableAutoPiPApps()
-                            }
-                        }
-
-                    if coordinator.isRefreshingAutoPiPApps {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 14, height: 14)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.12))
-                )
-
-                if shouldShowAutoPiPSuggestions {
-                    autoPiPAppSuggestions
-                }
-            }
-
-            if !coordinator.autoPiPAppSelections.isEmpty {
-                selectedAutoPiPAppsList
-            }
-        }
-        .padding(14)
-        .background(cardBackground)
-        .onAppear {
-            if coordinator.availableAutoPiPApps.isEmpty && !coordinator.isRefreshingAutoPiPApps {
-                coordinator.refreshAvailableAutoPiPApps()
-            }
-        }
-        .onChange(of: isAutoPiPSearchFocused) { _, isFocused in
-            if isFocused,
-               coordinator.availableAutoPiPApps.isEmpty,
-               !coordinator.isRefreshingAutoPiPApps {
-                coordinator.refreshAvailableAutoPiPApps()
-            }
-        }
-        .onChange(of: autoPiPQuery) { _, newValue in
-            let normalizedQuery = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalizedQuery.isEmpty,
-               coordinator.availableAutoPiPApps.isEmpty,
-               !coordinator.isRefreshingAutoPiPApps {
-                coordinator.refreshAvailableAutoPiPApps()
-            }
-            highlightedAutoPiPAppID = autoPiPDropdownApps.first?.id
-        }
-    }
-
-    @ViewBuilder
-    private var selectedAutoPiPAppsList: some View {
-        if coordinator.autoPiPAppSelections.count > 6 {
-            ScrollView {
-                selectedAutoPiPAppsRows
-            }
-            .frame(height: selectedAutoPiPAppsListMaxHeight)
-        } else {
-            selectedAutoPiPAppsRows
-        }
-    }
-
-    private var selectedAutoPiPAppsRows: some View {
-        VStack(alignment: .leading, spacing: selectedAutoPiPAppsRowSpacing) {
-            ForEach(coordinator.autoPiPAppSelections) { app in
-                selectedAutoPiPAppRow(app)
-            }
-        }
-    }
-
-    private func selectedAutoPiPAppRow(_ app: AutoPiPAppSelection) -> some View {
-        HStack(spacing: 10) {
-            AppIconView(bundleIdentifier: app.bundleIdentifier)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.displayName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text(app.bundleIdentifier)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button {
-                coordinator.removeAutoPiPAppSelection(bundleIdentifier: app.bundleIdentifier)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
-        )
     }
 
     private var footer: some View {
@@ -390,14 +288,6 @@ struct AnyPIPMenuView: View {
     private var areAllPermissionsGranted: Bool {
         coordinator.isScreenRecordingTrusted && coordinator.isAccessibilityTrusted
     }
-
-    private var selectedAutoPiPAppsListMaxHeight: CGFloat {
-        selectedAutoPiPAppsRowHeight * 6 + selectedAutoPiPAppsRowSpacing * 5
-    }
-
-    private var selectedAutoPiPAppsRowHeight: CGFloat { 45 }
-
-    private var selectedAutoPiPAppsRowSpacing: CGFloat { 8 }
 
     private func savePrimaryShortcut() {
         NSApp.keyWindow?.makeFirstResponder(nil)
@@ -484,145 +374,6 @@ struct AnyPIPMenuView: View {
             get: { coordinator.hoverSwitchEnabled },
             set: { coordinator.setHoverSwitchEnabled($0) }
         )
-    }
-
-    private var autoPiPDropdownApps: [AutoPiPAppSelection] {
-        let selectedBundleIdentifiers = Set(coordinator.autoPiPAppSelections.map(\.bundleIdentifier))
-        let availableApps = coordinator.availableAutoPiPApps.filter { !selectedBundleIdentifiers.contains($0.bundleIdentifier) }
-        let normalizedQuery = normalizedAutoPiPQuery
-        guard !normalizedQuery.isEmpty else { return [] }
-
-        return availableApps.filter { app in
-            app.displayName.localizedCaseInsensitiveContains(normalizedQuery)
-                || app.bundleIdentifier.localizedCaseInsensitiveContains(normalizedQuery)
-        }
-        .prefix(8)
-        .map { $0 }
-    }
-
-    private var autoPiPAppSuggestions: some View {
-        Group {
-            if autoPiPDropdownApps.isEmpty {
-                Text(autoPiPEmptyStateText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(autoPiPDropdownApps) { app in
-                            Button {
-                                addAutoPiPAppSelection(app)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    AppIconView(bundleIdentifier: app.bundleIdentifier)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(app.displayName)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text(app.bundleIdentifier)
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: "plus.circle.fill")
-                                        .foregroundStyle(Color(nsColor: .controlAccentColor))
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(app.id == highlightedAutoPiPAppID ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.22) : .clear)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .onHover { isHovering in
-                                if isHovering {
-                                    highlightedAutoPiPAppID = app.id
-                                }
-                            }
-                        }
-                    }
-                    .padding(6)
-                }
-            }
-        }
-        .frame(height: 176)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
-        )
-    }
-
-    private var normalizedAutoPiPQuery: String {
-        autoPiPQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var shouldShowAutoPiPSuggestions: Bool {
-        !normalizedAutoPiPQuery.isEmpty
-    }
-
-    private var autoPiPEmptyStateText: String {
-        if coordinator.isRefreshingAutoPiPApps {
-            return "Loading apps..."
-        }
-
-        if coordinator.availableAutoPiPApps.isEmpty {
-            return "No apps found yet."
-        }
-
-        if autoPiPQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "All discovered apps are already selected."
-        }
-
-        return "No apps match your search."
-    }
-
-    private func addAutoPiPAppSelection(_ app: AutoPiPAppSelection) {
-        coordinator.addAutoPiPAppSelection(app)
-        autoPiPQuery = ""
-        highlightedAutoPiPAppID = nil
-        isAutoPiPSearchFocused = true
-    }
-
-    private func moveAutoPiPHighlight(_ offset: Int) {
-        let apps = autoPiPDropdownApps
-        guard !apps.isEmpty else { return }
-
-        let currentIndex = highlightedAutoPiPAppID.flatMap { id in
-            apps.firstIndex { $0.id == id }
-        }
-        let nextIndex: Int
-
-        if let currentIndex {
-            nextIndex = (currentIndex + offset + apps.count) % apps.count
-        } else {
-            nextIndex = offset > 0 ? 0 : apps.count - 1
-        }
-
-        highlightedAutoPiPAppID = apps[nextIndex].id
-    }
-
-    private func commitHighlightedAutoPiPApp() {
-        let apps = autoPiPDropdownApps
-        guard !apps.isEmpty else { return }
-
-        let selectedApp = highlightedAutoPiPAppID.flatMap { id in
-            apps.first { $0.id == id }
-        } ?? apps[0]
-
-        addAutoPiPAppSelection(selectedApp)
     }
 
     private var cardBackground: some View {
@@ -719,70 +470,6 @@ struct AnyPIPMenuView: View {
             private func close() {
                 window?.makeFirstResponder(nil)
                 closeMenuBarExtra?()
-            }
-        }
-    }
-
-    private struct AutoPiPSearchKeyHandler: NSViewRepresentable {
-        var isActive: Bool
-        var onMoveSelection: (Int) -> Void
-        var onCommitSelection: () -> Void
-
-        func makeNSView(context: Context) -> KeyHandlerView {
-            let view = KeyHandlerView()
-            view.isActive = isActive
-            view.onMoveSelection = onMoveSelection
-            view.onCommitSelection = onCommitSelection
-            view.installMonitor()
-            return view
-        }
-
-        func updateNSView(_ nsView: KeyHandlerView, context: Context) {
-            nsView.isActive = isActive
-            nsView.onMoveSelection = onMoveSelection
-            nsView.onCommitSelection = onCommitSelection
-        }
-
-        final class KeyHandlerView: NSView {
-            var isActive = false
-            var onMoveSelection: ((Int) -> Void)?
-            var onCommitSelection: (() -> Void)?
-            private var monitor: Any?
-
-            deinit {
-                removeMonitor()
-            }
-
-            func installMonitor() {
-                removeMonitor()
-                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                    guard let self,
-                          self.isActive,
-                          self.window?.firstResponder is NSTextView else {
-                        return event
-                    }
-
-                    switch event.keyCode {
-                    case 125:
-                        self.onMoveSelection?(1)
-                        return nil
-                    case 126:
-                        self.onMoveSelection?(-1)
-                        return nil
-                    case 36, 76:
-                        self.onCommitSelection?()
-                        return nil
-                    default:
-                        return event
-                    }
-                }
-            }
-
-            private func removeMonitor() {
-                if let monitor {
-                    NSEvent.removeMonitor(monitor)
-                    self.monitor = nil
-                }
             }
         }
     }
@@ -1009,7 +696,7 @@ private struct CardHeader: View {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
+                .frame(width: 25, height: 25)
                 .background(Color.primary.opacity(0.06), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -1033,7 +720,7 @@ private struct PermissionRow: View {
             Image(systemName: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.system(size: 15))
                 .foregroundStyle(isGranted ? Color(nsColor: .systemGreen) : .orange)
-                .frame(width: 22)
+                .frame(width: 24)
             Text(title)
                 .font(.system(size: 13, weight: .medium))
             Spacer()
@@ -1048,7 +735,7 @@ private struct PermissionRow: View {
                     .foregroundStyle(.blue)
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
     }
 }
 

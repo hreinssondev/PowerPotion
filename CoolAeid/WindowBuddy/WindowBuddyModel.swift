@@ -595,8 +595,7 @@ final class WindowBuddyModel: ObservableObject {
         let targetGroupIdentifier: Int
         if runningFocusGroupIdentifiers.count == 1 {
             let groupIdentifier = runningFocusGroupIdentifiers[0]
-            if currentGroupIdentifier == groupIdentifier,
-               focusGroupSwitchingHidesOthers {
+            if currentGroupIdentifier == groupIdentifier {
                 hideFocusGroup(groupIdentifier)
                 return
             }
@@ -921,12 +920,12 @@ final class WindowBuddyModel: ObservableObject {
         }
 
         let preferredActivationBundleIdentifiers = preferredActivationBundleIdentifiers(for: groupIdentifier)
-        let revealedApplicationCount = revealAndTileFocusGroup(groupIdentifier,
-                                                               bundleIdentifiers: targetBundleIdentifiers,
-                                                               preferredActivationBundleIdentifiers: preferredActivationBundleIdentifiers)
         let hiddenApplicationCount = focusGroupSwitchingHidesOthers ?
             mover.hideApplications(bundleIdentifiers: bundleIdentifiersOutsideFocusGroup(groupIdentifier)).count :
             0
+        let revealedApplicationCount = revealAndTileFocusGroup(groupIdentifier,
+                                                               bundleIdentifiers: targetBundleIdentifiers,
+                                                               preferredActivationBundleIdentifiers: preferredActivationBundleIdentifiers)
         let activatedApplicationCount = mover.revealApplications(
             bundleIdentifiers: targetBundleIdentifiers,
             preferredActivationBundleIdentifiers: preferredActivationBundleIdentifiers

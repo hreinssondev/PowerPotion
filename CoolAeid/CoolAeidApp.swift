@@ -85,6 +85,8 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
                 windowBuddyModel.resizeAutoTiledWindows()
             case .toggleFocusGroups:
                 windowBuddyModel.toggleFocusGroups()
+            case .openSettings:
+                openWindowBuddySettings()
             }
         }
         hotKeyController.start()
@@ -104,7 +106,6 @@ private enum LegacyPreferencesMigrator {
     private static let migrationMarkerKey = "CoolAeid.legacyPreferencesMigrated.v1"
 
     private static let anyPIPKeys: Set<String> = [
-        "AutoPiPAppSelections",
         "DoubleTapHotkeyInput",
         "DoubleTapKeyInput",
         "DoubleTapShortcutMode",
@@ -430,6 +431,7 @@ enum WindowBuddyHotKeyAction {
     case restoreMostRecentlyRemovedWindowToTiling
     case resizeAutoTiledWindows
     case toggleFocusGroups
+    case openSettings
 }
 
 private final class WindowBuddyHotKeyController {
@@ -441,6 +443,7 @@ private final class WindowBuddyHotKeyController {
         case restoreMostRecentlyRemovedWindowToTiling = 2
         case resizeAutoTiledWindows = 4
         case toggleFocusGroups = 6
+        case openSettings = 8
 
         var action: WindowBuddyHotKeyAction {
             switch self {
@@ -452,6 +455,8 @@ private final class WindowBuddyHotKeyController {
                 .resizeAutoTiledWindows
             case .toggleFocusGroups:
                 .toggleFocusGroups
+            case .openSettings:
+                .openSettings
             }
         }
     }
@@ -495,6 +500,9 @@ private final class WindowBuddyHotKeyController {
         registerHotKey(keyCode: UInt32(kVK_ANSI_6),
                        modifiers: UInt32(cmdKey | shiftKey),
                        identifier: .toggleFocusGroups)
+        registerHotKey(keyCode: UInt32(kVK_ANSI_8),
+                       modifiers: UInt32(cmdKey | shiftKey),
+                       identifier: .openSettings)
     }
 
     func stop() {

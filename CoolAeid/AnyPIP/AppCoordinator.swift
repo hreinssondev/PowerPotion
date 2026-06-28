@@ -170,7 +170,6 @@ final class AppCoordinator: ObservableObject {
             doubleTapSingleKeyInput = keySymbol(for: keyCode)
         }
         hoverSwitchEnabled = UserDefaults.standard.object(forKey: "HoverSwitchEnabled") as? Bool ?? false
-        loadAutoPiPAppSelections()
         lastObservedActivatedApp = NSWorkspace.shared.frontmostApplication
         registerHotKey()
         registerDoubleTapActionHotKey()
@@ -219,9 +218,7 @@ final class AppCoordinator: ObservableObject {
                     await self.stopPiP(restoreSource: true, focusSource: true)
                 }
 
-                let previousApp = self.lastObservedActivatedApp
                 self.lastObservedActivatedApp = activatedApp
-                self.handleAutomaticPiPActivation(previousApp: previousApp, activatedApp: activatedApp)
             }
         }
         appTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -239,7 +236,6 @@ final class AppCoordinator: ObservableObject {
             }
         }
         installEscapeMonitors()
-        refreshAvailableAutoPiPApps()
     }
 
     deinit {
@@ -1114,28 +1110,6 @@ final class AppCoordinator: ObservableObject {
         }
 
         ignoreNextSourceActivationUntil = Date().addingTimeInterval(1.5)
-    }
-
-    private func handleAutomaticPiPActivation(previousApp: NSRunningApplication?, activatedApp: NSRunningApplication) {
-        guard activeTarget == nil else { return }
-        guard activatedApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
-        guard activatedApp.activationPolicy == .regular else { return }
-        guard let previousApp else { return }
-        guard previousApp.processIdentifier != activatedApp.processIdentifier else { return }
-        guard previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
-        guard previousApp.activationPolicy == .regular else { return }
-        guard let bundleIdentifier = previousApp.bundleIdentifier,
-              autoPiPAppSelections.contains(where: { $0.bundleIdentifier == bundleIdentifier }) else {
-            return
-        }
-        guard automaticPiPStartInFlightProcessID == nil else { return }
-
-        automaticPiPStartInFlightProcessID = previousApp.processIdentifier
-
-        Task { @MainActor in
-            defer { self.automaticPiPStartInFlightProcessID = nil }
-            await self.startAutomaticPiP(for: previousApp)
-        }
     }
 
     private func beginPiP(

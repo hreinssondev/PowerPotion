@@ -67,6 +67,17 @@ struct AutoTileResult {
     let tiledWindowCount: Int
     let screenCount: Int
     let skippedWindowCount: Int
+    let appliedFramesByWindowID: [AutoTileWindowID: CGRect]
+
+    init(tiledWindowCount: Int,
+         screenCount: Int,
+         skippedWindowCount: Int,
+         appliedFramesByWindowID: [AutoTileWindowID: CGRect] = [:]) {
+        self.tiledWindowCount = tiledWindowCount
+        self.screenCount = screenCount
+        self.skippedWindowCount = skippedWindowCount
+        self.appliedFramesByWindowID = appliedFramesByWindowID
+    }
 }
 
 enum WindowMoveError: LocalizedError {
@@ -493,6 +504,7 @@ final class AccessibilityWindowMover {
         var tiledWindowCount = 0
         var skippedWindowCount = 0
         var firstError: Error?
+        var appliedFramesByWindowID: [AutoTileWindowID: CGRect] = [:]
 
         for screen in targetScreens {
             let screenWindows = windows.filter { ScreenKey($0.screenVisibleFrame) == screen }
@@ -526,14 +538,23 @@ final class AccessibilityWindowMover {
             var writeResult = applyAutoTile(assignments: assignmentsToApply)
             tiledWindowCount += writeResult.tiledWindowCount
             firstError = firstError ?? writeResult.firstError
+            appliedFramesByWindowID.merge(writeResult.appliedFramesByWindowID) { _, new in new }
 
             if rememberMinimumSizeObservations(writeResult.minimumSizeObservations) {
+                let previousTargetFramesByWindowID: [AutoTileWindowID: CGRect] = Dictionary(uniqueKeysWithValues: assignments.map { ($0.window.id, $0.frame) })
                 assignments = adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
                                                                          in: screenVisibleFrame)
-                assignmentsToApply = assignments
+                assignmentsToApply = assignments.filter { assignment in
+                    guard let previousFrame = previousTargetFramesByWindowID[assignment.window.id] else {
+                        return true
+                    }
+
+                    return !Self.framesMatch(previousFrame, assignment.frame)
+                }
                 writeResult = applyAutoTile(assignments: assignmentsToApply)
                 tiledWindowCount += writeResult.tiledWindowCount
                 firstError = firstError ?? writeResult.firstError
+                appliedFramesByWindowID.merge(writeResult.appliedFramesByWindowID) { _, new in new }
                 _ = rememberMinimumSizeObservations(writeResult.minimumSizeObservations)
             }
         }
@@ -544,7 +565,8 @@ final class AccessibilityWindowMover {
 
         return AutoTileResult(tiledWindowCount: tiledWindowCount,
                               screenCount: targetScreens.count,
-                              skippedWindowCount: skippedWindowCount)
+                              skippedWindowCount: skippedWindowCount,
+                              appliedFramesByWindowID: appliedFramesByWindowID)
     }
 
     func restoreAutoTileFrames(_ framesByWindowID: [AutoTileWindowID: CGRect],
@@ -568,12 +590,13 @@ final class AccessibilityWindowMover {
 
         return AutoTileResult(tiledWindowCount: writeResult.tiledWindowCount,
                               screenCount: screenCount,
-                              skippedWindowCount: 0)
+                              skippedWindowCount: 0,
+                              appliedFramesByWindowID: writeResult.appliedFramesByWindowID)
     }
 
-    private func applyAutoTile(assignments: [(window: AutoTileWindow, frame: CGRect)]) -> (tiledWindowCount: Int, firstError: Error?, minimumSizeObservations: [(AutoTileWindowID, CGSize)]) {
+    private func applyAutoTile(assignments: [(window: AutoTileWindow, frame: CGRect)]) -> (tiledWindowCount: Int, firstError: Error?, minimumSizeObservations: [(AutoTileWindowID, CGSize)], appliedFramesByWindowID: [AutoTileWindowID: CGRect]) {
         guard !assignments.isEmpty else {
-            return (0, nil, [])
+            return (0, nil, [], [:])
         }
 
         guard assignments.count > 1 else {
@@ -584,9 +607,9 @@ final class AccessibilityWindowMover {
                                                  for: assignment.window.window,
                                                  processIdentifier: assignment.window.processIdentifier)
                 return (1, nil, minimumSizeObservation(for: assignment,
-                                                       finalFrame: finalFrame).map { [$0] } ?? [])
+                                                       finalFrame: finalFrame).map { [$0] } ?? [], [assignment.window.id: finalFrame])
             } catch {
-                return (0, error, [])
+                return (0, error, [], [:])
             }
         }
 
@@ -594,19 +617,21 @@ final class AccessibilityWindowMover {
         var tiledWindowCount = 0
         var firstError: Error?
         var minimumSizeObservations: [(AutoTileWindowID, CGSize)] = []
+        var appliedFramesByWindowID: [AutoTileWindowID: CGRect] = [:]
 
-        DispatchQueue.concurrentPerform(iterations: assignments.count) { index in
+        let applyAssignment: (Int) -> Void = { index in
             let assignment = assignments[index]
 
             do {
-                let finalFrame = try setAutoTile(frame: assignment.frame,
-                                                 currentFrame: assignment.window.frame,
-                                                 for: assignment.window.window,
-                                                 processIdentifier: assignment.window.processIdentifier)
+                let finalFrame = try self.setAutoTile(frame: assignment.frame,
+                                                      currentFrame: assignment.window.frame,
+                                                      for: assignment.window.window,
+                                                      processIdentifier: assignment.window.processIdentifier)
                 lock.withLock {
                     tiledWindowCount += 1
-                    if let observation = minimumSizeObservation(for: assignment,
-                                                                finalFrame: finalFrame) {
+                    appliedFramesByWindowID[assignment.window.id] = finalFrame
+                    if let observation = self.minimumSizeObservation(for: assignment,
+                                                                     finalFrame: finalFrame) {
                         minimumSizeObservations.append(observation)
                     }
                 }
@@ -617,7 +642,15 @@ final class AccessibilityWindowMover {
             }
         }
 
-        return (tiledWindowCount, firstError, minimumSizeObservations)
+        if assignments.count < 4 {
+            for index in assignments.indices {
+                applyAssignment(index)
+            }
+        } else {
+            DispatchQueue.concurrentPerform(iterations: assignments.count, execute: applyAssignment)
+        }
+
+        return (tiledWindowCount, firstError, minimumSizeObservations, appliedFramesByWindowID)
     }
 
     private func minimumSizeObservation(for assignment: (window: AutoTileWindow, frame: CGRect),
@@ -1020,9 +1053,16 @@ final class AccessibilityWindowMover {
                                       targetFrame: CGRect,
                                       currentFrame: CGRect,
                                       processIdentifier: pid_t) -> CGRect? {
-        guard let visibleFrame = visibleFrame(containing: targetFrame) ?? visibleFrame(containing: currentFrame),
-              var finalFrame = try? frame(of: window) else {
+        guard var finalFrame = try? frame(of: window) else {
             return nil
+        }
+
+        guard !Self.framesMatch(finalFrame, targetFrame) else {
+            return finalFrame
+        }
+
+        guard let visibleFrame = visibleFrame(containing: targetFrame) ?? visibleFrame(containing: currentFrame) else {
+            return finalFrame
         }
 
         for _ in 0..<3 {
@@ -1223,37 +1263,17 @@ final class AccessibilityWindowMover {
                                            to: targetFrame.origin)
 
         if shouldMove, shouldResize, !didMoveWithWindowServer {
-            var positionError: AXError?
-            var sizeError: AXError?
-            let lock = NSLock()
-
-            DispatchQueue.concurrentPerform(iterations: 2) { index in
-                if index == 0 {
-                    let error = AXUIElementSetAttributeValue(window,
-                                                             kAXPositionAttribute as CFString,
-                                                             positionValue)
-                    if error != .success {
-                        lock.withLock {
-                            positionError = error
-                        }
-                    }
-                } else {
-                    let error = AXUIElementSetAttributeValue(window,
-                                                             kAXSizeAttribute as CFString,
-                                                             sizeValue)
-                    if error != .success {
-                        lock.withLock {
-                            sizeError = error
-                        }
-                    }
-                }
-            }
-
-            if let positionError {
+            let positionError = AXUIElementSetAttributeValue(window,
+                                                            kAXPositionAttribute as CFString,
+                                                            positionValue)
+            guard positionError == .success else {
                 throw WindowMoveError.cannotMove(positionError)
             }
 
-            if let sizeError {
+            let sizeError = AXUIElementSetAttributeValue(window,
+                                                        kAXSizeAttribute as CFString,
+                                                        sizeValue)
+            guard sizeError == .success else {
                 throw WindowMoveError.cannotResize(sizeError)
             }
 
