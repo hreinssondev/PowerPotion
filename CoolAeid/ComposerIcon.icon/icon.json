@@ -1,0 +1,52 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.10252,0.10252,0.10252,1.00000",
+      "display-p3:0.00000,0.00000,0.00000,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "ComposerIcon.png",
+          "name" : "ComposerIcon",
+          "position" : {
+            "scale" : 0.93,
+            "translation-in-points" : [
+              0.42500000000001137,
+              0.4250000000001819
+            ]
+          }
+        },
+        {
+          "glass" : true,
+          "hidden" : true,
+          "image-name" : "ComposerIcon.png",
+          "name" : "ComposerIcon",
+          "position" : {
+            "scale" : 1.01,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

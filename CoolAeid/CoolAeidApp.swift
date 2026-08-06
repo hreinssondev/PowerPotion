@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import Darwin
 import SwiftUI
 
 @main
@@ -23,9 +24,13 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
     private let windowBuddySettingsPresenter: WindowBuddySettingsWindowPresenter
     private let finderLastWindowHider: FinderLastWindowHider
     private var windowBuddyHotKeyController: WindowBuddyHotKeyController?
+    private var windowBuddySettingsShortcutCancellable: AnyCancellable?
+    private var windowBuddyShortcutCancellable: AnyCancellable?
+    private var windowBuddyPhysicalKeyCancellable: AnyCancellable?
     private var statusBarController: CoolAeidStatusBarController?
 
     override init() {
+        Self.exitIfThisIsASecondaryInstance()
         LegacyPreferencesMigrator.migrateIfNeeded()
         pipCoordinator = AppCoordinator()
         dockMoverModel = DockMoverModel()
@@ -62,6 +67,36 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        windowBuddyHotKeyController?.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        windowBuddyHotKeyController?.stop()
+    }
+
+    private static func exitIfThisIsASecondaryInstance() {
+        let ownProcessIdentifier = NSRunningApplication.current.processIdentifier
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        let ownBundlePath = Bundle.main.bundleURL.standardizedFileURL.path
+        let ownIsInstalledApp = ownBundlePath == "/Applications/CoolAeid.app"
+
+        let otherInstances = NSWorkspace.shared.runningApplications.filter { application in
+            application.processIdentifier != ownProcessIdentifier &&
+                application.bundleIdentifier == ownBundleIdentifier
+        }
+
+        guard !otherInstances.isEmpty else { return }
+
+        if ownIsInstalledApp {
+            for application in otherInstances {
+                application.terminate()
+            }
+        } else {
+            Darwin.exit(0)
+        }
+    }
+
     func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
         false
     }
@@ -81,15 +116,51 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
                 windowBuddyModel.fillFrontmostWindowAndTemporarilyRemoveFromTiling()
             case .restoreMostRecentlyRemovedWindowToTiling:
                 windowBuddyModel.restoreMostRecentlyRemovedWindowToTiling()
-            case .resizeAutoTiledWindows:
-                windowBuddyModel.resizeAutoTiledWindows()
-            case .toggleFocusGroups:
+            case .moveFocusedTiledWindowLeft:
+                windowBuddyModel.moveFrontmostTiledWindow(.left)
+            case .moveFocusedTiledWindowRight:
+                windowBuddyModel.moveFrontmostTiledWindow(.right)
+            case .toggleFocusGroupsForward:
                 windowBuddyModel.toggleFocusGroups()
+            case .toggleFocusGroupsBackward:
+                windowBuddyModel.toggleFocusGroups(reverse: true)
+            case .toggleSecondaryFocusGroupsForward:
+                windowBuddyModel.toggleFocusGroups(number: 2)
+            case .toggleSecondaryFocusGroupsBackward:
+                windowBuddyModel.toggleFocusGroups(reverse: true, number: 2)
             case .openSettings:
                 openWindowBuddySettings()
             }
         }
+        hotKeyController.settingsShortcut = windowBuddyModel.settingsShortcut
+        hotKeyController.focusGroupsForwardShortcut = windowBuddyModel.focusGroupsForwardShortcut
+        hotKeyController.focusGroupsBackwardShortcut = windowBuddyModel.focusGroupsBackwardShortcut
+        hotKeyController.updateFocusGroupPhysicalKeys(groupOne: windowBuddyModel.focusGroupOnePhysicalKey,
+                                                      groupTwo: windowBuddyModel.focusGroupTwoPhysicalKey)
         hotKeyController.start()
+        windowBuddySettingsShortcutCancellable = windowBuddyModel.$settingsShortcut
+            .dropFirst()
+            .sink { [weak hotKeyController] settingsShortcut in
+                hotKeyController?.updateSettingsShortcut(settingsShortcut)
+            }
+        windowBuddyShortcutCancellable = Publishers.CombineLatest(
+            windowBuddyModel.$focusGroupsForwardShortcut,
+            windowBuddyModel.$focusGroupsBackwardShortcut
+        )
+        .dropFirst()
+        .sink { [weak hotKeyController] forwardShortcut, backwardShortcut in
+            hotKeyController?.updateFocusGroupShortcuts(forward: forwardShortcut,
+                                                        backward: backwardShortcut)
+        }
+        windowBuddyPhysicalKeyCancellable = Publishers.CombineLatest(
+            windowBuddyModel.$focusGroupOnePhysicalKey,
+            windowBuddyModel.$focusGroupTwoPhysicalKey
+        )
+        .dropFirst()
+        .sink { [weak hotKeyController] groupOneKey, groupTwoKey in
+            hotKeyController?.updateFocusGroupPhysicalKeys(groupOne: groupOneKey,
+                                                           groupTwo: groupTwoKey)
+        }
         windowBuddyHotKeyController = hotKeyController
     }
 
@@ -120,24 +191,32 @@ private enum LegacyPreferencesMigrator {
 
     private static let windowBuddyKeys: Set<String> = [
         "activeFocusGroupIdentifier",
+        "activeSecondaryFocusGroupIdentifier",
         "autoTileAppBundleIdentifiers",
         "autoTileAppGroups",
         "autoTilingEnabled",
         "existingFirstNewWindowBundleIdentifiers",
+        "excludesManuallyMovedWindowsFromAutoTiling",
         "fillsFirstWindowByGroup",
         "focusedAutoTileWindowWidthFraction",
         "focusGroupIdentifiers",
+        "focusGroupOnePhysicalKeyCode",
+        "focusGroupSwitchDelay",
+        "focusGroupTwoPhysicalKeyCode",
+        "focusedGroupNumberByGroup",
         "focusTileWiderFixedBundleIdentifiers",
         "ignoredSecondWindowStartModeByGroup",
         "ignoresSecondAppInList",
         "ignoresSecondAppInListByGroup",
         "instantWindowMovement",
+        "keepsFullSizeWindowsOutOfAutoTiling",
         "mainAppBundleIdentifiersByGroup",
         "maximumColumnCountByGroup",
         "movesExistingAutoTileAppWindowsToFocusedGroup",
         "revealsActiveAutoTileGroupApps",
         "screenLayoutModeByGroup",
         "showsDockIcon",
+        "switchesAwayFromSingleAppFocusGroups",
         "tileDirectionByGroup",
         "widensFocusedAutoTileWindow"
     ]
@@ -180,8 +259,11 @@ final class MenuBarIconSelection: ObservableObject {
     }
 
     var image: NSImage {
-        let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Menu bar icon")
-            ?? NSImage(systemSymbolName: "pip", accessibilityDescription: "Menu bar icon")
+        let image = MenuBarIconLibrary.image(named: iconName, accessibilityDescription: "Menu bar icon")
+            ?? MenuBarIconLibrary.image(
+                named: MenuBarIconLibrary.customFlaskOpenName,
+                accessibilityDescription: "Menu bar icon"
+            )
             ?? NSImage()
         image.isTemplate = true
         image.size = NSSize(width: 16, height: 16)
@@ -191,7 +273,7 @@ final class MenuBarIconSelection: ObservableObject {
 
 @MainActor
 final class CoolAeidStatusBarController: NSObject, NSPopoverDelegate {
-    private static let defaultMenuBarIconName = "pip"
+    private static let defaultMenuBarIconName = MenuBarIconLibrary.customFlaskOpenName
     private static let menuBarIconNameKey = "CoolAeid.MenuBarIconName"
 
     private let coordinator: AppCoordinator
@@ -316,11 +398,12 @@ final class CoolAeidStatusBarController: NSObject, NSPopoverDelegate {
     }
 
     private static func menuBarImage(named iconName: String) -> NSImage? {
-        guard let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "CoolAeid") else {
+        guard let image = MenuBarIconLibrary.image(named: iconName, accessibilityDescription: "CoolAeid") else {
             return nil
         }
 
         image.isTemplate = true
+        image.size = NSSize(width: 16, height: 16)
         return image
     }
 }
@@ -344,10 +427,7 @@ private final class DockMoverSettingsWindowPresenter {
             .frame(
                 minWidth: 720,
                 idealWidth: 900,
-                maxWidth: .infinity,
-                minHeight: 320,
-                idealHeight: 320,
-                maxHeight: .infinity
+                maxWidth: .infinity
             )
             .background(SettingsWindowProbe { window in
                 model.configureSettingsWindow(window)
@@ -359,8 +439,8 @@ private final class DockMoverSettingsWindowPresenter {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.moveToActiveSpace]
-        window.setContentSize(NSSize(width: 900, height: 320))
-        window.minSize = NSSize(width: 720, height: 320)
+        window.setContentSize(NSSize(width: 900, height: 240))
+        window.minSize = NSSize(width: 720, height: 140)
         window.center()
         model.configureSettingsWindow(window)
 
@@ -389,8 +469,8 @@ private final class WindowBuddySettingsWindowPresenter {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.moveToActiveSpace]
-        window.setContentSize(NSSize(width: 680, height: 680))
-        window.minSize = NSSize(width: 680, height: 680)
+        window.setContentSize(NSSize(width: 920, height: 680))
+        window.minSize = NSSize(width: 860, height: 620)
         window.center()
 
         return NSWindowController(window: window)
@@ -429,20 +509,33 @@ private final class SettingsWindowProbeView: NSView {
 enum WindowBuddyHotKeyAction {
     case fillFrontmostWindowAndTemporarilyRemoveFromTiling
     case restoreMostRecentlyRemovedWindowToTiling
-    case resizeAutoTiledWindows
-    case toggleFocusGroups
+    case moveFocusedTiledWindowLeft
+    case moveFocusedTiledWindowRight
+    case toggleFocusGroupsForward
+    case toggleFocusGroupsBackward
+    case toggleSecondaryFocusGroupsForward
+    case toggleSecondaryFocusGroupsBackward
     case openSettings
 }
 
 private final class WindowBuddyHotKeyController {
     fileprivate static let signature: OSType = 0x57424459
     fileprivate typealias Handler = @MainActor (WindowBuddyHotKeyAction) -> Void
+    private static let registrationRetryDelays: [TimeInterval] = [0.1, 0.25, 0.5, 1, 2, 4]
 
-    private enum Identifier: UInt32 {
+    private enum Identifier: UInt32, CaseIterable {
         case fillFrontmostWindowAndTemporarilyRemoveFromTiling = 1
         case restoreMostRecentlyRemovedWindowToTiling = 2
-        case resizeAutoTiledWindows = 4
-        case toggleFocusGroups = 6
+        case moveFocusedTiledWindowLeft = 3
+        case moveFocusedTiledWindowRight = 4
+        case toggleFocusGroupsForward = 6
+        case toggleFocusGroupsBackward = 7
+        case toggleSecondaryFocusGroupsForward = 9
+        case toggleSecondaryFocusGroupsBackward = 10
+        case physicalFocusGroupsForward = 11
+        case physicalFocusGroupsBackward = 12
+        case physicalSecondaryFocusGroupsForward = 13
+        case physicalSecondaryFocusGroupsBackward = 14
         case openSettings = 8
 
         var action: WindowBuddyHotKeyAction {
@@ -451,10 +544,18 @@ private final class WindowBuddyHotKeyController {
                 .fillFrontmostWindowAndTemporarilyRemoveFromTiling
             case .restoreMostRecentlyRemovedWindowToTiling:
                 .restoreMostRecentlyRemovedWindowToTiling
-            case .resizeAutoTiledWindows:
-                .resizeAutoTiledWindows
-            case .toggleFocusGroups:
-                .toggleFocusGroups
+            case .moveFocusedTiledWindowLeft:
+                .moveFocusedTiledWindowLeft
+            case .moveFocusedTiledWindowRight:
+                .moveFocusedTiledWindowRight
+            case .toggleFocusGroupsForward, .physicalFocusGroupsForward:
+                .toggleFocusGroupsForward
+            case .toggleFocusGroupsBackward, .physicalFocusGroupsBackward:
+                .toggleFocusGroupsBackward
+            case .toggleSecondaryFocusGroupsForward, .physicalSecondaryFocusGroupsForward:
+                .toggleSecondaryFocusGroupsForward
+            case .toggleSecondaryFocusGroupsBackward, .physicalSecondaryFocusGroupsBackward:
+                .toggleSecondaryFocusGroupsBackward
             case .openSettings:
                 .openSettings
             }
@@ -462,11 +563,36 @@ private final class WindowBuddyHotKeyController {
     }
 
     private let handler: Handler
+    private let focusGroupPhysicalKeyController: FocusGroupPhysicalKeyController
     private var eventHandler: EventHandlerRef?
-    private var hotKeys: [EventHotKeyRef] = []
+    private var hotKeys: [Identifier: EventHotKeyRef] = [:]
+    private var registrationRetryTimer: Timer?
+    private var registrationRetryIndex = 0
+    private var focusGroupOnePhysicalKey: FocusGroupPhysicalKey = .groupOneDefault
+    private var focusGroupTwoPhysicalKey: FocusGroupPhysicalKey = .groupTwoDefault
+    var settingsShortcut: DockMoverShortcut = .windowBuddySettingsDefault
+    var focusGroupsForwardShortcut: DockMoverShortcut = .focusGroupsForwardDefault
+    var focusGroupsBackwardShortcut: DockMoverShortcut = .focusGroupsBackwardDefault
 
     init(handler: @escaping Handler) {
         self.handler = handler
+        focusGroupPhysicalKeyController = FocusGroupPhysicalKeyController { command in
+            let action: WindowBuddyHotKeyAction
+            switch (command.groupNumber, command.reverse) {
+            case (1, false):
+                action = .toggleFocusGroupsForward
+            case (1, true):
+                action = .toggleFocusGroupsBackward
+            case (2, false):
+                action = .toggleSecondaryFocusGroupsForward
+            case (2, true):
+                action = .toggleSecondaryFocusGroupsBackward
+            default:
+                return
+            }
+
+            handler(action)
+        }
     }
 
     deinit {
@@ -474,42 +600,44 @@ private final class WindowBuddyHotKeyController {
     }
 
     func start() {
-        guard eventHandler == nil else {
+        if eventHandler != nil {
+            restartRegistrationReconciliation()
+            focusGroupPhysicalKeyController.start()
             return
         }
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(),
-                            windowBuddyHotKeyCallback,
-                            1,
-                            &eventType,
-                            userData,
-                            &eventHandler)
+        let eventHandlerStatus = InstallEventHandler(GetApplicationEventTarget(),
+                                                     windowBuddyHotKeyCallback,
+                                                     1,
+                                                     &eventType,
+                                                     userData,
+                                                     &eventHandler)
+        guard eventHandlerStatus == noErr, eventHandler != nil else {
+            if let eventHandler {
+                RemoveEventHandler(eventHandler)
+                self.eventHandler = nil
+            }
+            focusGroupPhysicalKeyController.updateCarbonHandledCommands([])
+            focusGroupPhysicalKeyController.start()
+            return
+        }
 
-        registerHotKey(keyCode: UInt32(kVK_UpArrow),
-                       modifiers: UInt32(optionKey),
-                       identifier: .fillFrontmostWindowAndTemporarilyRemoveFromTiling)
-        registerHotKey(keyCode: UInt32(kVK_DownArrow),
-                       modifiers: UInt32(optionKey),
-                       identifier: .restoreMostRecentlyRemovedWindowToTiling)
-        registerHotKey(keyCode: UInt32(kVK_ANSI_7),
-                       modifiers: UInt32(cmdKey | shiftKey),
-                       identifier: .resizeAutoTiledWindows)
-        registerHotKey(keyCode: UInt32(kVK_ANSI_6),
-                       modifiers: UInt32(cmdKey | shiftKey),
-                       identifier: .toggleFocusGroups)
-        registerHotKey(keyCode: UInt32(kVK_ANSI_8),
-                       modifiers: UInt32(cmdKey | shiftKey),
-                       identifier: .openSettings)
+        restartRegistrationReconciliation()
+        focusGroupPhysicalKeyController.start()
     }
 
     func stop() {
-        for hotKey in hotKeys {
+        cancelRegistrationRetries(resetIndex: true)
+        focusGroupPhysicalKeyController.updateCarbonHandledCommands([])
+        focusGroupPhysicalKeyController.stop()
+
+        for hotKey in hotKeys.values {
             UnregisterEventHotKey(hotKey)
         }
-        hotKeys = []
+        hotKeys = [:]
 
         if let eventHandler {
             RemoveEventHandler(eventHandler)
@@ -522,14 +650,155 @@ private final class WindowBuddyHotKeyController {
             return
         }
 
-        Task { @MainActor in
-            handler(identifier.action)
+        handler(identifier.action)
+    }
+
+    func updateSettingsShortcut(_ shortcut: DockMoverShortcut) {
+        settingsShortcut = shortcut
+
+        guard eventHandler != nil else {
+            return
+        }
+
+        unregisterHotKey(identifier: .openSettings)
+        restartRegistrationReconciliation()
+    }
+
+    func updateFocusGroupShortcuts(forward: DockMoverShortcut,
+                                   backward: DockMoverShortcut) {
+        focusGroupsForwardShortcut = forward
+        focusGroupsBackwardShortcut = backward
+
+        guard eventHandler != nil else {
+            return
+        }
+
+        unregisterHotKey(identifier: .toggleFocusGroupsForward)
+        unregisterHotKey(identifier: .toggleFocusGroupsBackward)
+        restartRegistrationReconciliation()
+    }
+
+    func updateFocusGroupPhysicalKeys(groupOne: FocusGroupPhysicalKey,
+                                      groupTwo: FocusGroupPhysicalKey) {
+        focusGroupOnePhysicalKey = groupOne
+        focusGroupTwoPhysicalKey = groupTwo
+        focusGroupPhysicalKeyController.updateBindings(groupOneKey: groupOne,
+                                                       groupTwoKey: groupTwo)
+
+        guard eventHandler != nil else {
+            return
+        }
+
+        unregisterPhysicalFocusGroupHotKeys()
+        restartRegistrationReconciliation()
+    }
+
+    private func restartRegistrationReconciliation() {
+        cancelRegistrationRetries(resetIndex: true)
+        reconcileHotKeyRegistrations()
+    }
+
+    private func reconcileHotKeyRegistrations() {
+        guard eventHandler != nil else {
+            return
+        }
+
+        registerHotKeyIfNeeded(keyCode: UInt32(kVK_UpArrow),
+                               modifiers: UInt32(optionKey),
+                               identifier: .fillFrontmostWindowAndTemporarilyRemoveFromTiling)
+        registerHotKeyIfNeeded(keyCode: UInt32(kVK_DownArrow),
+                               modifiers: UInt32(optionKey),
+                               identifier: .restoreMostRecentlyRemovedWindowToTiling)
+        registerHotKeyIfNeeded(keyCode: UInt32(kVK_LeftArrow),
+                               modifiers: UInt32(controlKey | optionKey),
+                               identifier: .moveFocusedTiledWindowLeft)
+        registerHotKeyIfNeeded(keyCode: UInt32(kVK_RightArrow),
+                               modifiers: UInt32(controlKey | optionKey),
+                               identifier: .moveFocusedTiledWindowRight)
+        registerHotKeyIfNeeded(focusGroupsForwardShortcut,
+                               identifier: .toggleFocusGroupsForward)
+        registerHotKeyIfNeeded(focusGroupsBackwardShortcut,
+                               identifier: .toggleFocusGroupsBackward)
+        registerHotKeyIfNeeded(.secondaryFocusGroupsForwardDefault,
+                               identifier: .toggleSecondaryFocusGroupsForward)
+        registerHotKeyIfNeeded(.secondaryFocusGroupsBackwardDefault,
+                               identifier: .toggleSecondaryFocusGroupsBackward)
+        registerHotKeyIfNeeded(settingsShortcut,
+                               identifier: .openSettings)
+        registerPhysicalFocusGroupHotKeys()
+
+        if Identifier.allCases.allSatisfy({ hotKeys[$0] != nil }) {
+            cancelRegistrationRetries(resetIndex: true)
+        } else {
+            scheduleRegistrationRetryIfNeeded()
         }
     }
 
+    private func scheduleRegistrationRetryIfNeeded() {
+        guard registrationRetryTimer == nil,
+              registrationRetryIndex < Self.registrationRetryDelays.count,
+              eventHandler != nil else {
+            return
+        }
+
+        let delay = Self.registrationRetryDelays[registrationRetryIndex]
+        registrationRetryIndex += 1
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self else {
+                return
+            }
+
+            self.registrationRetryTimer = nil
+            self.reconcileHotKeyRegistrations()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        registrationRetryTimer = timer
+    }
+
+    private func cancelRegistrationRetries(resetIndex: Bool) {
+        registrationRetryTimer?.invalidate()
+        registrationRetryTimer = nil
+        if resetIndex {
+            registrationRetryIndex = 0
+        }
+    }
+
+    @discardableResult
+    private func registerHotKey(_ shortcut: DockMoverShortcut,
+                                identifier: Identifier) -> Bool {
+        registerHotKey(keyCode: UInt32(shortcut.keyCode),
+                       modifiers: shortcut.carbonModifiers,
+                       identifier: identifier)
+    }
+
+    @discardableResult
+    private func registerHotKeyIfNeeded(_ shortcut: DockMoverShortcut,
+                                        identifier: Identifier) -> Bool {
+        if hotKeys[identifier] != nil {
+            return true
+        }
+
+        return registerHotKey(shortcut, identifier: identifier)
+    }
+
+    @discardableResult
+    private func registerHotKeyIfNeeded(keyCode: UInt32,
+                                        modifiers: UInt32,
+                                        identifier: Identifier) -> Bool {
+        if hotKeys[identifier] != nil {
+            return true
+        }
+
+        return registerHotKey(keyCode: keyCode,
+                              modifiers: modifiers,
+                              identifier: identifier)
+    }
+
+    @discardableResult
     private func registerHotKey(keyCode: UInt32,
                                 modifiers: UInt32,
-                                identifier: Identifier) {
+                                identifier: Identifier) -> Bool {
+        unregisterHotKey(identifier: identifier)
         let hotKeyID = EventHotKeyID(signature: Self.signature,
                                      id: identifier.rawValue)
         var hotKey: EventHotKeyRef?
@@ -542,10 +811,64 @@ private final class WindowBuddyHotKeyController {
 
         guard status == noErr,
               let hotKey else {
+            return false
+        }
+
+        hotKeys[identifier] = hotKey
+        return true
+    }
+
+    private func unregisterHotKey(identifier: Identifier) {
+        guard let hotKey = hotKeys.removeValue(forKey: identifier) else {
             return
         }
 
-        hotKeys.append(hotKey)
+        UnregisterEventHotKey(hotKey)
+    }
+
+    private func registerPhysicalFocusGroupHotKeys() {
+        let registrations: [(Identifier, FocusGroupPhysicalKey, FocusGroupCycleCommand)] = [
+            (.physicalFocusGroupsForward,
+             focusGroupOnePhysicalKey,
+             FocusGroupCycleCommand(groupNumber: 1, reverse: false)),
+            (.physicalFocusGroupsBackward,
+             focusGroupOnePhysicalKey,
+             FocusGroupCycleCommand(groupNumber: 1, reverse: true)),
+            (.physicalSecondaryFocusGroupsForward,
+             focusGroupTwoPhysicalKey,
+             FocusGroupCycleCommand(groupNumber: 2, reverse: false)),
+            (.physicalSecondaryFocusGroupsBackward,
+             focusGroupTwoPhysicalKey,
+             FocusGroupCycleCommand(groupNumber: 2, reverse: true))
+        ]
+        var carbonHandledCommands: Set<FocusGroupCycleCommand> = []
+
+        for (identifier, physicalKey, command) in registrations {
+            let modifiers = command.reverse ? UInt32(cmdKey) : 0
+            if registerHotKeyIfNeeded(keyCode: Self.carbonKeyCode(for: physicalKey),
+                                      modifiers: modifiers,
+                                      identifier: identifier) {
+                carbonHandledCommands.insert(command)
+            }
+        }
+
+        focusGroupPhysicalKeyController.updateCarbonHandledCommands(carbonHandledCommands)
+    }
+
+    private func unregisterPhysicalFocusGroupHotKeys() {
+        unregisterHotKey(identifier: .physicalFocusGroupsForward)
+        unregisterHotKey(identifier: .physicalFocusGroupsBackward)
+        unregisterHotKey(identifier: .physicalSecondaryFocusGroupsForward)
+        unregisterHotKey(identifier: .physicalSecondaryFocusGroupsBackward)
+        focusGroupPhysicalKeyController.updateCarbonHandledCommands([])
+    }
+
+    private static func carbonKeyCode(for physicalKey: FocusGroupPhysicalKey) -> UInt32 {
+        if physicalKey.keyCode == UInt16(kVK_CapsLock) {
+            return UInt32(kVK_F17)
+        }
+
+        return UInt32(physicalKey.keyCode)
     }
 }
 

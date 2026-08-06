@@ -115,6 +115,10 @@ struct AnyPIPMenuView: View {
                 Divider()
 
                 hoverSwitchRow
+
+                Divider()
+
+                betaModeRow
             }
         }
         .padding(15)
@@ -131,6 +135,25 @@ struct AnyPIPMenuView: View {
                 Text("Hover to switch Mode")
                     .font(.system(size: 13, weight: .semibold))
                 Text("Hover PIP window to quickly glance and hover again to return to PiP")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var betaModeRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Toggle("", isOn: betaModeBinding)
+                .toggleStyle(.switch)
+                .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("beta mode")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Use an alternate PiP renderer for macOS beta black-window issues")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -373,6 +396,13 @@ struct AnyPIPMenuView: View {
         Binding(
             get: { coordinator.hoverSwitchEnabled },
             set: { coordinator.setHoverSwitchEnabled($0) }
+        )
+    }
+
+    private var betaModeBinding: Binding<Bool> {
+        Binding(
+            get: { coordinator.betaModeEnabled },
+            set: { coordinator.setBetaModeEnabled($0) }
         )
     }
 

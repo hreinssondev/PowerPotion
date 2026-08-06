@@ -36,6 +36,7 @@ final class AppCoordinator: ObservableObject {
         case privateAlpha
         case privateAlphaFailed(String)
         case fakeHide
+        case betaOnScreen
     }
 
     private enum PiPEntryBehavior {
@@ -74,6 +75,7 @@ final class AppCoordinator: ObservableObject {
     @Published var primaryShortcutMode: ShortcutTriggerMode = .modifierKey
     @Published var doubleTapShortcutMode: ShortcutTriggerMode = .singleKey
     @Published var hoverSwitchEnabled = UserDefaults.standard.bool(forKey: "HoverSwitchEnabled")
+    @Published var betaModeEnabled = UserDefaults.standard.bool(forKey: "AnyPIPBetaModeEnabled")
     @Published private(set) var autoPiPAppSelections: [AutoPiPAppSelection] = []
     @Published private(set) var availableAutoPiPApps: [AutoPiPAppSelection] = []
     @Published private(set) var isRefreshingAutoPiPApps = false
@@ -89,6 +91,7 @@ final class AppCoordinator: ObservableObject {
     private var currentPrimarySingleKeyCode: UInt16 = UInt16(kVK_ANSI_P)
     private var currentDoubleTapSingleKeyCode: UInt16 = UInt16(kVK_ANSI_P)
     private var captureSession: WindowCaptureSession?
+    private var snapshotSession: WindowSnapshotSession?
     private var pipWindowController: PiPWindowController?
     private var activeTarget: PiPWindowTarget?
     private var sourceVisibleFrame: CGRect?
@@ -309,6 +312,15 @@ final class AppCoordinator: ObservableObject {
             self.synchronizeAutoPiPSelections(using: discoveredApps, fallingBackTo: selectedApps)
             self.isRefreshingAutoPiPApps = false
         }
+    }
+
+    func setBetaModeEnabled(_ enabled: Bool) {
+        betaModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "AnyPIPBetaModeEnabled")
+        pipWindowController?.betaModeEnabled = enabled
+        statusText = enabled
+            ? "AnyPIP beta mode enabled. New PiP windows use the alternate renderer."
+            : "AnyPIP beta mode disabled."
     }
 
     func addAutoPiPAppSelection(_ app: AutoPiPAppSelection) {
@@ -930,6 +942,8 @@ final class AppCoordinator: ObservableObject {
 
         await captureSession?.stop()
         captureSession = nil
+        snapshotSession?.stop()
+        snapshotSession = nil
 
         pipWindowController?.onExit = nil
         if wasGlancing {
@@ -1046,6 +1060,12 @@ final class AppCoordinator: ObservableObject {
     private func hideSourceWindow() {
         guard let target = activeTarget, let sourceVisibleFrame else { return }
 
+        if betaModeEnabled {
+            windowOrderController?.sendToBack(windowID: target.windowID)
+            sourceHideStrategy = .betaOnScreen
+            return
+        }
+
         // 1. Park the window far offscreen (multi-monitor safe) so it remains active and rendering
         if AccessibilityWindowController.fakeHide(target.accessibilityWindow, preserving: sourceVisibleFrame) {
             sourceHideStrategy = .fakeHide
@@ -1080,6 +1100,8 @@ final class AppCoordinator: ObservableObject {
             return "Live PiP is running with the source transparent. \(interactionHint)"
         case .privateAlphaFailed(let detail):
             return "Private alpha did not hide the source. \(detail) \(interactionHint)"
+        case .betaOnScreen:
+            return "Live PiP is running in beta mode with the source kept on-screen for capture. \(interactionHint)"
         case .fakeHide, nil:
             return "Live PiP is running with the source fake-hidden. \(interactionHint)"
         }
@@ -1128,9 +1150,11 @@ final class AppCoordinator: ObservableObject {
             title: target.appName,
             sourceFrame: target.frame,
             restoredFrame: behavior.usesSavedManualFrame ? PiPWindowController.restoredFrame() : nil,
+            restoredSize: PiPWindowController.restoredSize(),
             shouldPersistFrame: behavior.usesSavedManualFrame
         )
         pipWindowController.hoverSwitchEnabled = behavior.allowsInteractiveControls ? hoverSwitchEnabled : false
+        pipWindowController.betaModeEnabled = betaModeEnabled
         pipWindowController.allowsClickToSource = true
         pipWindowController.allowsInteractiveControls = behavior.allowsInteractiveControls
         pipWindowController.onGlance = { [weak self] in
@@ -1144,13 +1168,20 @@ final class AppCoordinator: ObservableObject {
         }
         self.pipWindowController = pipWindowController
 
-        let captureSession = WindowCaptureSession { [weak self] sampleBuffer in
-            self?.pipWindowController?.enqueue(sampleBuffer)
-        }
-        self.captureSession = captureSession
-
         do {
-            try await captureSession.start(windowID: target.windowID)
+            if betaModeEnabled {
+                let snapshotSession = WindowSnapshotSession { [weak self] image in
+                    self?.pipWindowController?.display(image)
+                }
+                self.snapshotSession = snapshotSession
+                snapshotSession.start(windowID: target.windowID)
+            } else {
+                let captureSession = WindowCaptureSession { [weak self] sampleBuffer in
+                    self?.pipWindowController?.enqueue(sampleBuffer)
+                }
+                self.captureSession = captureSession
+                try await captureSession.start(windowID: target.windowID)
+            }
             pipWindowController.show()
             hideSourceWindow()
             statusText = runningStatusText

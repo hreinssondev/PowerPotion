@@ -1,9 +1,21 @@
 import AppKit
 import AVFoundation
+import CoreImage
 import CoreMedia
 
 final class CapturePreviewView: NSView {
     private let displayLayer = AVSampleBufferDisplayLayer()
+    private let ciContext = CIContext()
+    var usesBetaRenderer = false {
+        didSet {
+            displayLayer.isHidden = usesBetaRenderer
+            if usesBetaRenderer {
+                displayLayer.flushAndRemoveImage()
+            } else {
+                layer?.contents = nil
+            }
+        }
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         return true
@@ -24,14 +36,26 @@ final class CapturePreviewView: NSView {
     }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
+        if usesBetaRenderer {
+            enqueueViaCoreImage(sampleBuffer)
+            return
+        }
+
         if displayLayer.status == .failed {
             displayLayer.flush()
         }
         displayLayer.enqueue(sampleBuffer)
     }
 
+    func display(_ image: CGImage) {
+        displayLayer.isHidden = true
+        layer?.contentsGravity = .resizeAspect
+        layer?.contents = image
+    }
+
     func flush() {
         displayLayer.flushAndRemoveImage()
+        layer?.contents = nil
     }
 
     override func layout() {
@@ -41,9 +65,21 @@ final class CapturePreviewView: NSView {
 
     private func setupLayer() {
         wantsLayer = true
+        layer = CALayer()
+        layer?.backgroundColor = NSColor.black.cgColor
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
-        layer = displayLayer
         displayLayer.frame = bounds
+        layer?.addSublayer(displayLayer)
+    }
+
+    private func enqueueViaCoreImage(_ sampleBuffer: CMSampleBuffer) {
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let ciImage = CIImage(cvPixelBuffer: imageBuffer)
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
+
+        layer?.contentsGravity = .resizeAspect
+        layer?.contents = cgImage
     }
 }

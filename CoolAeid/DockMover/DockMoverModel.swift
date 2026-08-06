@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 @MainActor
 final class DockMoverModel: ObservableObject {
     private enum SettingsWindowDefaultFrame {
-        static let minContentSize = CGSize(width: 720, height: 320)
-        static let contentHeight: CGFloat = 320
+        static let minContentSize = CGSize(width: 720, height: 120)
+        static let fallbackContentHeight: CGFloat = 240
     }
 
     @Published var isEnabled: Bool {
@@ -30,7 +30,7 @@ final class DockMoverModel: ObservableObject {
     @Published private(set) var draftEmptySlotSizeForAll: DockEmptySlotSize = .full
     @Published private(set) var dockRestartMode: DockRestartMode = .fast
     @Published private(set) var allowStackableGaps = false
-    @Published private(set) var cpuMode: DockMoverCPUMode = .defaultMode
+    @Published private(set) var cpuMode: DockMoverCPUMode = .lowCPU
     @Published private(set) var settingsShortcut: DockMoverShortcut = .settingsDefault
     @Published private(set) var canUndo = false
 
@@ -41,6 +41,7 @@ final class DockMoverModel: ObservableObject {
     private var applyTask: Task<Void, Never>?
     private var pendingApplyReason: String?
     private var runningAppsPollTask: Task<Void, Never>?
+    private var lowCPUReconcileTask: Task<Void, Never>?
     private var settingsWindowOpener: (() -> Void)?
     private var recentlyQuitBundleIdentifiers: [String: Date] = [:]
     private var lastManagedRunningBundleIdentifiers: Set<String> = []
@@ -50,21 +51,21 @@ final class DockMoverModel: ObservableObject {
     private var didScheduleDefaultSettingsWindowFrame = false
     private var isRestoring = true
     private let recentlyQuitSuppressionInterval: TimeInterval = 300
+    private let recentlyQuitReopenDetectionDelay: TimeInterval = 2
+    private let lowCPUReconcileDelay: TimeInterval = 2.5
+    private let lowCPUStaleDockCheckInterval: TimeInterval = 30
     private let applyDebounceInterval: TimeInterval = 0.25
-    private let runningAppsPollInterval: TimeInterval = 1.0
+    private let runningAppsPollInterval: TimeInterval = 3.0
     private let dockIdleCheckInterval: TimeInterval = 0.12
+    private let dockIdleWaitLimit: TimeInterval = 2
     private let undoLimit = 50
 
     init() {
         isEnabled = defaults.bool(forKey: DefaultsKey.isEnabled)
         settingsShortcut = loadSettingsShortcut()
-        dockRestartMode = loadDockRestartMode(forKey: DefaultsKey.dockRestartMode) ?? .fast
+        dockRestartMode = .fast
         allowStackableGaps = defaults.bool(forKey: DefaultsKey.allowStackableGaps)
-        cpuMode = loadCPUMode(forKey: DefaultsKey.cpuMode) ?? .defaultMode
-        if defaults.integer(forKey: DefaultsKey.dockRestartModeDefaultVersion) < 1 {
-            dockRestartMode = .fast
-            defaults.set(1, forKey: DefaultsKey.dockRestartModeDefaultVersion)
-        }
+        cpuMode = .lowCPU
         loadSlots()
         refreshRunningApps()
         lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
@@ -90,6 +91,7 @@ final class DockMoverModel: ObservableObject {
 
     deinit {
         runningAppsPollTask?.cancel()
+        lowCPUReconcileTask?.cancel()
         for cancellable in cancellables {
             NSWorkspace.shared.notificationCenter.removeObserver(cancellable)
         }
@@ -211,16 +213,18 @@ final class DockMoverModel: ObservableObject {
             window.zoom(nil)
         }
 
+        let contentHeight = smallestSettingsContentHeight(for: window)
+
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else {
             window.setContentSize(
-                CGSize(width: SettingsWindowDefaultFrame.minContentSize.width, height: SettingsWindowDefaultFrame.contentHeight)
+                CGSize(width: SettingsWindowDefaultFrame.minContentSize.width, height: contentHeight)
             )
             window.center()
             return
         }
 
         window.setContentSize(
-            CGSize(width: visibleFrame.width, height: SettingsWindowDefaultFrame.contentHeight)
+            CGSize(width: visibleFrame.width, height: contentHeight)
         )
 
         let frame = window.frame
@@ -233,6 +237,13 @@ final class DockMoverModel: ObservableObject {
             ),
             display: true
         )
+    }
+
+    // Smallest height that still fits the settings content, so the window
+    // opens as short as possible while staying full width.
+    private func smallestSettingsContentHeight(for window: NSWindow) -> CGFloat {
+        let fittingHeight = window.contentView?.fittingSize.height ?? 0
+        return fittingHeight > 0 ? fittingHeight : SettingsWindowDefaultFrame.fallbackContentHeight
     }
 
     func quit() {
@@ -290,6 +301,18 @@ final class DockMoverModel: ObservableObject {
     }
 
     func addAppFromPanel() {
+        // Defer the panel to the next run-loop tick so the menu that triggered
+        // this action can fully dismiss first. Presenting the modal while the
+        // menu is still tracking can make the panel lose focus or return
+        // cancelled, so the chosen app never gets added.
+        DispatchQueue.main.async { [weak self] in
+            self?.presentAddAppPanel()
+        }
+    }
+
+    private func presentAddAppPanel() {
+        NSApp.activate(ignoringOtherApps: true)
+
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.applicationBundle]
         panel.canChooseDirectories = false
@@ -470,17 +493,6 @@ final class DockMoverModel: ObservableObject {
         }
     }
 
-    func setDockRestartMode(_ mode: DockRestartMode) {
-        guard dockRestartMode != mode else {
-            return
-        }
-
-        pushUndoState()
-        dockRestartMode = mode
-        persist()
-        status = "Dock refresh will use \(mode.statusLabel)"
-    }
-
     func setAllowStackableGaps(_ isAllowed: Bool) {
         guard allowStackableGaps != isAllowed else {
             return
@@ -493,20 +505,6 @@ final class DockMoverModel: ObservableObject {
             ? "Half-size empty slots can stack into larger gaps"
             : "Adjacent half-size empty slots will collapse to one half gap"
         scheduleApply(reason: "Changed stackable gaps")
-    }
-
-    func setCPUMode(_ mode: DockMoverCPUMode) {
-        guard cpuMode != mode else {
-            return
-        }
-
-        pushUndoState()
-        cpuMode = mode
-        configureRunningAppsPolling()
-        refreshRunningApps(forcePublish: true)
-        lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
-        persist()
-        status = mode.statusLabel
     }
 
     func undoLastChange() {
@@ -599,25 +597,13 @@ final class DockMoverModel: ObservableObject {
         return DockEmptySlotSize(rawValue: rawValue)
     }
 
-    private func loadDockRestartMode(forKey key: String) -> DockRestartMode? {
-        guard let rawValue = defaults.string(forKey: key) else {
-            return nil
-        }
-
-        return DockRestartMode(rawValue: rawValue)
-    }
-
-    private func loadCPUMode(forKey key: String) -> DockMoverCPUMode? {
-        guard let rawValue = defaults.string(forKey: key) else {
-            return nil
-        }
-
-        return DockMoverCPUMode(rawValue: rawValue)
-    }
-
     private func loadSettingsShortcut() -> DockMoverShortcut {
         guard let data = defaults.data(forKey: DefaultsKey.settingsShortcut),
               let shortcut = try? JSONDecoder().decode(DockMoverShortcut.self, from: data) else {
+            return .settingsDefault
+        }
+
+        if shortcut == .legacySettingsDefault {
             return .settingsDefault
         }
 
@@ -767,6 +753,7 @@ final class DockMoverModel: ObservableObject {
         let label = app?.localizedName ?? "Managed app"
         lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
         scheduleApply(reason: "\(label): app launched")
+        scheduleLowCPUReconcile(reason: "\(label): launch settled")
     }
 
     private func handleWorkspaceQuit(notification: Notification) {
@@ -789,6 +776,7 @@ final class DockMoverModel: ObservableObject {
         let label = app?.localizedName ?? "Managed app"
         lastManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers
         scheduleApply(reason: "\(label): app quit")
+        scheduleLowCPUReconcile(reason: "\(label): quit settled")
     }
 
     @discardableResult
@@ -814,7 +802,10 @@ final class DockMoverModel: ObservableObject {
     private func configureRunningAppsPolling() {
         runningAppsPollTask?.cancel()
         runningAppsPollTask = nil
+        lowCPUReconcileTask?.cancel()
+        lowCPUReconcileTask = nil
         guard cpuMode.usesPolling else {
+            startLowCPUStaleDockChecking()
             return
         }
 
@@ -829,6 +820,20 @@ final class DockMoverModel: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 self?.reconcileRunningAppsFromPoll()
+            }
+        }
+    }
+
+    private func startLowCPUStaleDockChecking() {
+        let checkInterval = lowCPUStaleDockCheckInterval
+        runningAppsPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(Int(checkInterval * 1_000)))
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    self?.reconcileStaleDockTilesForLowCPU()
+                }
             }
         }
     }
@@ -848,6 +853,69 @@ final class DockMoverModel: ObservableObject {
 
         lastManagedRunningBundleIdentifiers = currentManagedRunningBundleIdentifiers
         scheduleApply(reason: "Running apps changed")
+    }
+
+    private func scheduleLowCPUReconcile(reason: String) {
+        guard cpuMode == .lowCPU else { return }
+
+        lowCPUReconcileTask?.cancel()
+        let delay = lowCPUReconcileDelay
+        lowCPUReconcileTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Int(delay * 1_000)))
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                self?.reconcileRunningAppsFromLowCPUEvent(reason: reason)
+            }
+        }
+    }
+
+    private func reconcileRunningAppsFromLowCPUEvent(reason: String) {
+        let nextRunningApps = activeRunningApps()
+        let previousManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers(in: runningApps)
+        let currentManagedRunningBundleIdentifiers = managedRunningBundleIdentifiers(in: nextRunningApps)
+
+        guard nextRunningApps != runningApps ||
+              currentManagedRunningBundleIdentifiers != previousManagedRunningBundleIdentifiers else {
+            return
+        }
+
+        runningApps = nextRunningApps
+        lastManagedRunningBundleIdentifiers = currentManagedRunningBundleIdentifiers
+
+        if currentManagedRunningBundleIdentifiers != previousManagedRunningBundleIdentifiers {
+            scheduleApply(reason: reason)
+        }
+    }
+
+    private func reconcileStaleDockTilesForLowCPU() {
+        guard cpuMode == .lowCPU, isEnabled else { return }
+
+        refreshRunningApps(forcePublish: false)
+        guard hasStaleManagedDockTiles() else { return }
+
+        scheduleApply(reason: "Low CPU stale Dock cleanup")
+    }
+
+    private func hasStaleManagedDockTiles() -> Bool {
+        let runningBundleIdentifiers = Set(runningApps.map(\.bundleIdentifier))
+        let staleManagedBundleIdentifiers = Set(savedSlots.compactMap { slot -> String? in
+            guard !slot.isPermanent,
+                  !slot.reservesEmptySlot,
+                  !savedReservesEmptySlotsForAll,
+                  !runningBundleIdentifiers.contains(slot.bundleIdentifier) else {
+                return nil
+            }
+
+            return slot.bundleIdentifier
+        })
+
+        guard !staleManagedBundleIdentifiers.isEmpty,
+              let dockBundleIdentifiers = try? service.currentPersistentAppBundleIdentifiers() else {
+            return false
+        }
+
+        return !dockBundleIdentifiers.isDisjoint(with: staleManagedBundleIdentifiers)
     }
 
     private func activeRunningApps() -> [RunningDockApp] {
@@ -1039,6 +1107,7 @@ final class DockMoverModel: ObservableObject {
 
     private func clearRecentlyQuitBundleIdentifiersForOpenSavedApps() {
         let savedBundleIdentifiers = Set(savedSlots.map(\.bundleIdentifier))
+        let now = Date()
         let openSavedBundleIdentifiers = NSWorkspace.shared.runningApplications.compactMap { app -> String? in
             guard app.activationPolicy == .regular,
                   let bundleIdentifier = app.bundleIdentifier,
@@ -1050,6 +1119,11 @@ final class DockMoverModel: ObservableObject {
         }
 
         for bundleIdentifier in openSavedBundleIdentifiers {
+            if let quitDate = recentlyQuitBundleIdentifiers[bundleIdentifier],
+               now.timeIntervalSince(quitDate) < recentlyQuitReopenDetectionDelay {
+                continue
+            }
+
             recentlyQuitBundleIdentifiers.removeValue(forKey: bundleIdentifier)
         }
     }
@@ -1087,8 +1161,13 @@ final class DockMoverModel: ObservableObject {
     private func waitUntilDockIsIdle() async {
         var hasReportedWait = false
         let idleCheckInterval = dockIdleCheckInterval
+        let waitStartedAt = Date()
 
         while isDockLikelyActive {
+            guard Date().timeIntervalSince(waitStartedAt) < dockIdleWaitLimit else {
+                break
+            }
+
             if !hasReportedWait {
                 status = "Waiting for Dock to be idle before refreshing"
                 hasReportedWait = true
@@ -1190,7 +1269,6 @@ private enum DefaultsKey {
     static let emptySlotSizeForAll = "DockMover.emptySlotSizeForAll"
     static let draftEmptySlotSizeForAll = "DockMover.draftEmptySlotSizeForAll"
     static let dockRestartMode = "DockMover.dockRestartMode"
-    static let dockRestartModeDefaultVersion = "DockMover.dockRestartModeDefaultVersion"
     static let allowStackableGaps = "DockMover.allowStackableGaps"
     static let cpuMode = "DockMover.cpuMode"
     static let settingsShortcut = "DockMover.settingsShortcut"
@@ -1237,7 +1315,7 @@ enum DockMoverCPUMode: String, CaseIterable, Identifiable {
     var statusLabel: String {
         switch self {
         case .defaultMode:
-            "CPU mode set to Default; DockMover will poll running apps every second"
+            "CPU mode set to Default; DockMover will poll running apps every 3 seconds"
         case .whenChanged:
             "CPU mode set to When changed; DockMover will publish running apps only after changes"
         case .cache:

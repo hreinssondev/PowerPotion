@@ -1,6 +1,24 @@
 import AppKit
 import SwiftUI
 
+enum MenuBarIconLibrary {
+    static let customFlaskOpenName = "coolaied.flask.open"
+
+    static func image(named iconName: String, accessibilityDescription: String? = nil) -> NSImage? {
+        let image: NSImage?
+        switch iconName {
+        case customFlaskOpenName:
+            image = NSImage(named: "MenuBarFlaskOpen")
+            image?.accessibilityDescription = accessibilityDescription
+        default:
+            image = NSImage(systemSymbolName: iconName, accessibilityDescription: accessibilityDescription)
+        }
+
+        image?.isTemplate = true
+        return image
+    }
+}
+
 @MainActor
 final class MenuBarIconPickerWindowPresenter {
     private var windowController: NSWindowController?
@@ -113,15 +131,24 @@ private struct MenuBarIconPickerView: View {
         ZStack {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
-            Image(systemName: isValidSymbol(draftIconName) ? draftIconName : "questionmark")
+            Image(nsImage: previewImage)
+                .resizable()
+                .scaledToFit()
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.primary)
+                .padding(15)
         }
         .frame(width: 58, height: 58)
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
+    }
+
+    private var previewImage: NSImage {
+        MenuBarIconLibrary.image(named: draftIconName)
+            ?? NSImage(systemSymbolName: "questionmark", accessibilityDescription: nil)
+            ?? NSImage()
     }
 
     private var searchField: some View {
@@ -172,8 +199,8 @@ private struct MenuBarIconPickerView: View {
     }
 
     private func resetIcon() {
-        draftIconName = "pip"
-        onSelect("pip")
+        draftIconName = MenuBarIconLibrary.customFlaskOpenName
+        onSelect(MenuBarIconLibrary.customFlaskOpenName)
     }
 
     private func openSFSymbolsGallery() {
@@ -186,7 +213,7 @@ private struct MenuBarIconPickerView: View {
 
     private func isValidSymbol(_ iconName: String) -> Bool {
         let trimmedIconName = iconName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return NSImage(systemSymbolName: trimmedIconName, accessibilityDescription: nil) != nil
+        return MenuBarIconLibrary.image(named: trimmedIconName) != nil
     }
 }
 
@@ -198,8 +225,9 @@ private struct MenuBarIconTile: View {
     var body: some View {
         Button(action: select) {
             VStack(spacing: 7) {
-                Image(systemName: option.name)
-                    .font(.system(size: 22, weight: .semibold))
+                Image(nsImage: option.image)
+                    .resizable()
+                    .scaledToFit()
                     .frame(width: 28, height: 28)
                 Text(option.shortName)
                     .font(.system(size: 10, weight: .medium))
@@ -235,14 +263,22 @@ private struct MenuBarIconOption: Identifiable {
     var id: String { name }
 
     var shortName: String {
-        name
+        if name == MenuBarIconLibrary.customFlaskOpenName {
+            return "flask 4"
+        }
+
+        return name
             .replacingOccurrences(of: ".fill", with: "")
             .replacingOccurrences(of: ".circle", with: "")
             .replacingOccurrences(of: ".square", with: "")
     }
 
     var isAvailable: Bool {
-        NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+        MenuBarIconLibrary.image(named: name) != nil
+    }
+
+    var image: NSImage {
+        MenuBarIconLibrary.image(named: name) ?? NSImage()
     }
 
     func matches(_ query: String) -> Bool {
@@ -257,6 +293,7 @@ private enum MenuBarIconCatalog {
     static let availableOptions = allOptions.filter(\.isAvailable)
 
     private static let allOptions: [MenuBarIconOption] = [
+        option(MenuBarIconLibrary.customFlaskOpenName, "Custom", "flask", "bottle", "open", "outline", "coolaied"),
         option("pip", "PiP", "picture", "video", "window"),
         option("pip.fill", "PiP", "picture", "video", "window"),
         option("pip.enter", "PiP", "enter", "start", "video"),

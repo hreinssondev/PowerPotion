@@ -186,6 +186,10 @@ final class DockLayoutService {
         return persistentAppTiles(from: plist)
     }
 
+    func currentPersistentAppBundleIdentifiers() throws -> Set<String> {
+        Set(try readPersistentAppTiles().map(\.bundleIdentifier))
+    }
+
     private func persistentAppTiles(from plist: [String: Any]) -> [DockTileSnapshot] {
         let tiles = plist["persistent-apps"] as? [[String: Any]] ?? []
 

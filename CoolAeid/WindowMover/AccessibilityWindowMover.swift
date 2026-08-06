@@ -57,6 +57,27 @@ struct AutoTileWindow {
     let window: AXUIElement
     let frame: CGRect
     let screenVisibleFrame: CGRect
+    let isNativeFullScreen: Bool
+
+    init(id: AutoTileWindowID,
+         applicationName: String,
+         bundleIdentifier: String,
+         title: String?,
+         processIdentifier: pid_t,
+         window: AXUIElement,
+         frame: CGRect,
+         screenVisibleFrame: CGRect,
+         isNativeFullScreen: Bool = false) {
+        self.id = id
+        self.applicationName = applicationName
+        self.bundleIdentifier = bundleIdentifier
+        self.title = title
+        self.processIdentifier = processIdentifier
+        self.window = window
+        self.frame = frame
+        self.screenVisibleFrame = screenVisibleFrame
+        self.isNativeFullScreen = isNativeFullScreen
+    }
 
     var area: CGFloat {
         max(0, frame.width) * max(0, frame.height)
@@ -292,6 +313,91 @@ final class AccessibilityWindowMover {
         }
     }
 
+    func applicationProcessIdentifiers(bundleIdentifiers: Set<String>,
+                                       hidden: Bool? = nil,
+                                       runningApplications: [NSRunningApplication]? = nil) -> Set<pid_t> {
+        guard !bundleIdentifiers.isEmpty else {
+            return []
+        }
+
+        let applications = runningApplications ?? NSWorkspace.shared.runningApplications
+        return applications.reduce(into: []) { processIdentifiers, application in
+            guard let bundleIdentifier = application.bundleIdentifier,
+                  bundleIdentifiers.contains(bundleIdentifier),
+                  application.activationPolicy == .regular,
+                  hidden.map({ application.isHidden == $0 }) ?? true else {
+                return
+            }
+
+            processIdentifiers.insert(application.processIdentifier)
+        }
+    }
+
+    @discardableResult
+    func activateApplication(bundleIdentifiers: Set<String>,
+                             preferredBundleIdentifiers: [String] = [],
+                             runningApplications: [NSRunningApplication]? = nil) -> Bool {
+        guard !bundleIdentifiers.isEmpty else {
+            return false
+        }
+
+        let applications = (runningApplications ?? NSWorkspace.shared.runningApplications).filter { application in
+            guard let bundleIdentifier = application.bundleIdentifier else {
+                return false
+            }
+
+            return bundleIdentifiers.contains(bundleIdentifier) &&
+                application.activationPolicy == .regular
+        }
+        guard !applications.isEmpty else {
+            return false
+        }
+
+        let applicationsByBundleIdentifier = Dictionary(grouping: applications) { application in
+            application.bundleIdentifier ?? ""
+        }
+        let activationApplication = preferredBundleIdentifiers
+            .compactMap { applicationsByBundleIdentifier[$0]?.first }
+            .first ?? applications.first
+
+        // Raise every app in the group above outside apps — not just one — so a
+        // multi-app tile (e.g. side-by-side halves) comes forward together
+        // instead of leaving one window stranded behind another app. Activate
+        // the non-preferred apps first, then the preferred app last so it ends
+        // up frontmost/key.
+        var didActivate = false
+        for application in applications
+        where application.processIdentifier != activationApplication?.processIdentifier {
+            if application.activate(options: [.activateAllWindows]) {
+                didActivate = true
+            }
+        }
+        if let activationApplication,
+           activationApplication.activate(options: [.activateAllWindows]) {
+            didActivate = true
+        }
+
+        return didActivate
+    }
+
+    @discardableResult
+    func prepareHiddenApplicationsForAppLevelReveal(bundleIdentifiers: Set<String>) -> Int {
+        guard !bundleIdentifiers.isEmpty else {
+            return 0
+        }
+
+        return NSWorkspace.shared.runningApplications.reduce(0) { count, application in
+            guard let bundleIdentifier = application.bundleIdentifier,
+                  bundleIdentifiers.contains(bundleIdentifier),
+                  application.activationPolicy == .regular,
+                  application.isHidden else {
+                return count
+            }
+
+            return count + unminimizeWindows(for: application)
+        }
+    }
+
     func hideApplications(bundleIdentifiers: Set<String>) -> Set<String> {
         guard !bundleIdentifiers.isEmpty else {
             return []
@@ -345,15 +451,26 @@ final class AccessibilityWindowMover {
         }
         var affectedBundleIdentifiers: Set<String> = []
 
+        // Send all application-level reveal requests back-to-back before doing
+        // any per-window restoration work. This keeps multi-app groups from
+        // appearing one application at a time.
         for application in applications {
             guard let bundleIdentifier = application.bundleIdentifier else {
                 continue
             }
 
             let didUnhide = application.unhide()
-            let unminimizedWindowCount = unminimizeWindows(for: application)
+            if didUnhide {
+                affectedBundleIdentifiers.insert(bundleIdentifier)
+            }
+        }
 
-            if didUnhide || unminimizedWindowCount > 0 {
+        for application in applications {
+            guard let bundleIdentifier = application.bundleIdentifier else {
+                continue
+            }
+
+            if unminimizeWindows(for: application) > 0 {
                 affectedBundleIdentifiers.insert(bundleIdentifier)
             }
         }
@@ -365,6 +482,20 @@ final class AccessibilityWindowMover {
             let activationApplication = preferredActivationBundleIdentifiers
                 .compactMap { applicationsByBundleIdentifier[$0]?.first }
                 .first ?? applications.first
+
+            // Raise every app in the group, not just the preferred one, so all
+            // tiled windows come forward together. Preferred app is activated
+            // last so it ends up frontmost/key.
+            for application in applications
+            where application.processIdentifier != activationApplication?.processIdentifier {
+                guard let bundleIdentifier = application.bundleIdentifier else {
+                    continue
+                }
+
+                if application.activate(options: [.activateAllWindows]) {
+                    affectedBundleIdentifiers.insert(bundleIdentifier)
+                }
+            }
 
             if let activationApplication,
                let bundleIdentifier = activationApplication.bundleIdentifier,
@@ -473,7 +604,9 @@ final class AccessibilityWindowMover {
                                       processIdentifier: processIdentifier,
                                       window: window,
                                       frame: frame,
-                                      screenVisibleFrame: screenVisibleFrame)
+                                      screenVisibleFrame: screenVisibleFrame,
+                                      isNativeFullScreen: booleanAttribute("AXFullScreen" as CFString,
+                                                                           for: window) ?? false)
             }
         }
     }
@@ -513,25 +646,34 @@ final class AccessibilityWindowMover {
                 continue
             }
 
-            let layout = autoTileLayout(for: candidateWindows,
-                                        in: screenVisibleFrame,
-                                        layoutMode: layoutMode,
-                                        reservedSlotBundleIdentifiers: reservedSlotBundleIdentifiers,
-                                        fillsFirstWindow: fillsFirstWindow,
-                                        fillsSingleVisibleWindow: fillsSingleVisibleWindow,
-                                        screenLayoutMode: screenLayoutMode,
-                                        maximumColumnCount: maximumColumnCount,
-                                        tileDirection: tileDirection,
-                                        ignoresSecondAppInList: ignoresSecondAppInList,
-                                        ignoredSecondWindowStartMode: ignoredSecondWindowStartMode,
-                                        primaryWidthFractionOverride: primaryWidthFractionOverride,
-                                        primaryWindowIDOverride: primaryWindowIDOverride,
-                                        primaryWindowSlotOverride: primaryWindowSlotOverride,
-                                        preservesPrimaryWindowPosition: preservesPrimaryWindowPosition)
+            let forcesEqualThirds = layoutMode == .sharedGrid &&
+                screenLayoutMode.splitDirection == .horizontal &&
+                candidateWindows.count == 3
+            let layout = forcesEqualThirds ?
+                equalThirdsLayout(for: candidateWindows,
+                                  in: screenVisibleFrame,
+                                  tileDirection: tileDirection) :
+                autoTileLayout(for: candidateWindows,
+                               in: screenVisibleFrame,
+                               layoutMode: layoutMode,
+                               reservedSlotBundleIdentifiers: reservedSlotBundleIdentifiers,
+                               fillsFirstWindow: fillsFirstWindow,
+                               fillsSingleVisibleWindow: fillsSingleVisibleWindow,
+                               screenLayoutMode: screenLayoutMode,
+                               maximumColumnCount: maximumColumnCount,
+                               tileDirection: tileDirection,
+                               ignoresSecondAppInList: ignoresSecondAppInList,
+                               ignoredSecondWindowStartMode: ignoredSecondWindowStartMode,
+                               primaryWidthFractionOverride: primaryWidthFractionOverride,
+                               primaryWindowIDOverride: primaryWindowIDOverride,
+                               primaryWindowSlotOverride: primaryWindowSlotOverride,
+                               preservesPrimaryWindowPosition: preservesPrimaryWindowPosition)
             skippedWindowCount += layout.skippedWindowCount
 
-            var assignments = adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
-                                                                         in: screenVisibleFrame)
+            var assignments = forcesEqualThirds ?
+                layout.assignments :
+                adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
+                                                           in: screenVisibleFrame)
             var assignmentsToApply = assignments.filter {
                 !Self.framesMatch($0.window.frame, $0.frame)
             }
@@ -540,7 +682,8 @@ final class AccessibilityWindowMover {
             firstError = firstError ?? writeResult.firstError
             appliedFramesByWindowID.merge(writeResult.appliedFramesByWindowID) { _, new in new }
 
-            if rememberMinimumSizeObservations(writeResult.minimumSizeObservations) {
+            if !forcesEqualThirds,
+               rememberMinimumSizeObservations(writeResult.minimumSizeObservations) {
                 let previousTargetFramesByWindowID: [AutoTileWindowID: CGRect] = Dictionary(uniqueKeysWithValues: assignments.map { ($0.window.id, $0.frame) })
                 assignments = adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
                                                                          in: screenVisibleFrame)
@@ -907,24 +1050,29 @@ final class AccessibilityWindowMover {
         return value as? String
     }
 
-    private func isMinimized(_ window: AXUIElement) -> Bool {
-        var minimizedValue: CFTypeRef?
-        let minimizedError = AXUIElementCopyAttributeValue(window,
-                                                          kAXMinimizedAttribute as CFString,
-                                                          &minimizedValue)
+    private func booleanAttribute(_ attribute: CFString, for element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute, &value)
 
-        guard minimizedError == .success,
-              let minimizedValue,
-              CFGetTypeID(minimizedValue) == CFBooleanGetTypeID() else {
-            return false
+        guard error == .success,
+              let value,
+              CFGetTypeID(value) == CFBooleanGetTypeID() else {
+            return nil
         }
 
-        let minimized = minimizedValue as! CFBoolean
-        return CFBooleanGetValue(minimized)
+        return CFBooleanGetValue((value as! CFBoolean))
+    }
+
+    private func isMinimized(_ window: AXUIElement) -> Bool {
+        booleanAttribute(kAXMinimizedAttribute as CFString, for: window) ?? false
     }
 
     func currentFrame(of window: AXUIElement) -> CGRect? {
         try? frame(of: window)
+    }
+
+    func visibleScreenFrame(containing windowFrame: CGRect) -> CGRect? {
+        visibleFrame(containing: windowFrame)
     }
 
     private func frame(of window: AXUIElement) throws -> CGRect {
@@ -1564,6 +1712,23 @@ final class AccessibilityWindowMover {
             return ([], 0)
         }
 
+        if layoutMode == .sharedGrid,
+           screenLayoutMode.splitDirection == .horizontal,
+           windows.count == 3 {
+            return equalThirdsLayout(for: windows,
+                                     in: screenVisibleFrame,
+                                     tileDirection: tileDirection)
+        }
+
+        if layoutMode == .sharedGrid,
+           screenLayoutMode.splitDirection == .vertical,
+           windows.count > 2 {
+            return verticalOverlayLayout(for: windows,
+                                         in: screenVisibleFrame,
+                                         primaryFraction: screenLayoutMode.primaryFraction,
+                                         tileDirection: tileDirection)
+        }
+
         if windows.count == 1,
            let window = windows.first {
             if preservesPrimaryWindowPosition,
@@ -1573,7 +1738,8 @@ final class AccessibilityWindowMover {
 
             let frame: CGRect
 
-            if let reservedSlot = reservedSlotBundleIdentifiers.firstIndex(of: window.bundleIdentifier),
+            if screenLayoutMode != .fullScreen,
+               let reservedSlot = reservedSlotBundleIdentifiers.firstIndex(of: window.bundleIdentifier),
                reservedSlotBundleIdentifiers.count > 1 {
                 let frames = autoTileFrames(count: reservedSlotBundleIdentifiers.count,
                                             in: screenVisibleFrame,
@@ -1582,10 +1748,10 @@ final class AccessibilityWindowMover {
                 frame = frames[min(reservedSlot, frames.count - 1)]
             } else {
                 let canFillScreen = Self.isBrowserBundleIdentifier(window.bundleIdentifier)
-                if screenLayoutMode == .fullScreen {
+                if screenLayoutMode == .fullScreen ||
+                   screenLayoutMode == .verticalScreen {
                     frame = screenVisibleFrame
-                } else if screenLayoutMode.prioritizesFirstWindow ||
-                          screenLayoutMode == .verticalScreen {
+                } else if screenLayoutMode.prioritizesFirstWindow {
                     frame = splitPrimaryFrames(in: screenVisibleFrame,
                                                primaryFraction: screenLayoutMode.primaryFraction,
                                                direction: screenLayoutMode.splitDirection,
@@ -1631,7 +1797,11 @@ final class AccessibilityWindowMover {
                                                  skippedWindowCount: baseLayout.skippedWindowCount)
         }
 
-        if let primaryWidthFractionOverride {
+        if let primaryWidthFractionOverride,
+           usesFirstWindowPriorityLayout(layoutMode: layoutMode,
+                                         screenLayoutMode: screenLayoutMode,
+                                         windowCount: windows.count,
+                                         maximumColumnCount: maximumColumnCount) {
             return firstWindowPriorityLayout(for: windows,
                                              in: screenVisibleFrame,
                                              primaryFraction: primaryWidthFractionOverride,
@@ -1643,7 +1813,10 @@ final class AccessibilityWindowMover {
         }
 
         if layoutMode == .sharedGrid,
-           screenLayoutMode.prioritizesFirstWindow {
+           usesFirstWindowPriorityLayout(layoutMode: layoutMode,
+                                         screenLayoutMode: screenLayoutMode,
+                                         windowCount: windows.count,
+                                         maximumColumnCount: maximumColumnCount) {
             return firstWindowPriorityLayout(for: windows,
                                              in: screenVisibleFrame,
                                              primaryFraction: screenLayoutMode.primaryFraction,
@@ -1728,6 +1901,87 @@ final class AccessibilityWindowMover {
         }
     }
 
+    private func equalThirdsLayout(for windows: [AutoTileWindow],
+                                   in screenVisibleFrame: CGRect,
+                                   tileDirection: AutoTileDirection) -> (assignments: [(window: AutoTileWindow, frame: CGRect)], skippedWindowCount: Int) {
+        let orderedWindows: [AutoTileWindow]
+
+        switch tileDirection {
+        case .leftToRight, .centerOut:
+            orderedWindows = windows
+        case .rightToLeft:
+            orderedWindows = Array(windows.reversed())
+        }
+
+        let frames = autoTileFrames(count: 3,
+                                    in: screenVisibleFrame,
+                                    maximumColumnCount: 3,
+                                    tileDirection: .leftToRight)
+
+        return (zip(orderedWindows, frames).map { (window: $0.0, frame: $0.1) }, 0)
+    }
+
+    private func verticalOverlayLayout(for windows: [AutoTileWindow],
+                                       in screenVisibleFrame: CGRect,
+                                       primaryFraction: CGFloat,
+                                       tileDirection: AutoTileDirection) -> (assignments: [(window: AutoTileWindow, frame: CGRect)], skippedWindowCount: Int) {
+        let splitFrames = splitPrimaryFrames(in: screenVisibleFrame,
+                                             primaryFraction: primaryFraction,
+                                             direction: .vertical,
+                                             tileDirection: tileDirection)
+        let horizontalOverlayFrames = splitPrimaryFrames(in: screenVisibleFrame,
+                                                         primaryFraction: 0.5,
+                                                         direction: .horizontal,
+                                                         tileDirection: tileDirection)
+        let centeredVerticalOverlayFrame = roundedFrame(CGRect(x: screenVisibleFrame.minX,
+                                                               y: screenVisibleFrame.minY + (screenVisibleFrame.height * 0.25),
+                                                               width: screenVisibleFrame.width,
+                                                               height: screenVisibleFrame.height * 0.5))
+        let overflowWindows = Array(windows.dropFirst(3))
+        let overflowFrames: [CGRect]
+
+        switch overflowWindows.count {
+        case 0:
+            overflowFrames = []
+        case 1:
+            overflowFrames = [horizontalOverlayFrames.originalFrame]
+        case 2:
+            overflowFrames = [horizontalOverlayFrames.originalFrame, horizontalOverlayFrames.remainingFrame]
+        default:
+            overflowFrames = autoTileFrames(count: overflowWindows.count,
+                                            in: screenVisibleFrame,
+                                            maximumColumnCount: overflowWindows.count,
+                                            tileDirection: tileDirection)
+        }
+
+        let assignments = windows.enumerated().map { index, window in
+            switch index {
+            case 0:
+                return (window: window, frame: splitFrames.originalFrame)
+            case 1:
+                return (window: window, frame: splitFrames.remainingFrame)
+            case 2:
+                return (window: window, frame: centeredVerticalOverlayFrame)
+            default:
+                return (window: window, frame: overflowFrames[index - 3])
+            }
+        }
+
+        return (assignments, 0)
+    }
+
+    private func usesFirstWindowPriorityLayout(layoutMode: AutoTileLayoutMode,
+                                               screenLayoutMode: AutoTileScreenLayoutMode,
+                                               windowCount: Int,
+                                               maximumColumnCount: Int) -> Bool {
+        guard layoutMode == .sharedGrid,
+              screenLayoutMode.prioritizesFirstWindow else {
+            return false
+        }
+
+        return windowCount <= Self.normalizedMaximumAutoTileColumns(maximumColumnCount)
+    }
+
     private func primaryBaseLayout(for windows: [AutoTileWindow],
                                    in screenVisibleFrame: CGRect,
                                    layoutMode: AutoTileLayoutMode,
@@ -1737,8 +1991,10 @@ final class AccessibilityWindowMover {
                                    tileDirection: AutoTileDirection,
                                    ignoresSecondAppInList: Bool,
                                    ignoredSecondWindowStartMode: AutoTileIgnoredSecondWindowStartMode) -> (assignments: [(window: AutoTileWindow, frame: CGRect)], skippedWindowCount: Int) {
-        if layoutMode == .sharedGrid,
-           screenLayoutMode.prioritizesFirstWindow {
+        if usesFirstWindowPriorityLayout(layoutMode: layoutMode,
+                                         screenLayoutMode: screenLayoutMode,
+                                         windowCount: windows.count,
+                                         maximumColumnCount: maximumColumnCount) {
             return firstWindowPriorityLayout(for: windows,
                                              in: screenVisibleFrame,
                                              primaryFraction: screenLayoutMode.primaryFraction,
@@ -2071,6 +2327,11 @@ final class AccessibilityWindowMover {
                                            ignoredSecondWindowStartMode: AutoTileIgnoredSecondWindowStartMode) -> (assignments: [(window: AutoTileWindow, frame: CGRect)], skippedWindowCount: Int) {
         guard let originalWindow = windows.first else {
             return ([], 0)
+        }
+
+        if windows.count == 1,
+           splitDirection == .vertical {
+            return ([(window: originalWindow, frame: screenVisibleFrame)], 0)
         }
 
         let maximumWindowCount = Self.maximumAutoTileWindows(for: maximumColumnCount)
