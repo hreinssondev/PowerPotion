@@ -174,6 +174,7 @@ final class AccessibilityWindowMover {
     private var frameAttributeSupportByProcessIdentifier: [pid_t: Bool] = [:]
     private var windowServerMoveSupportByProcessIdentifier: [pid_t: Bool] = [:]
     private var minimumAutoTileSizesByWindowID: [AutoTileWindowID: CGSize] = [:]
+    private var snappedAutoTileSizesByWindowID: [AutoTileWindowID: (requestedSize: CGSize, acceptedSize: CGSize)] = [:]
 
     func moveFrontmostWindow(to placement: WindowPlacement, using variant: WindowLayoutVariant) throws -> WindowMoveResult {
         let target = try frontmostWindowTarget()
@@ -631,6 +632,11 @@ final class AccessibilityWindowMover {
         minimumAutoTileSizesByWindowID = minimumAutoTileSizesByWindowID.filter {
             currentWindowIDs.contains($0.key)
         }
+        // Each focus group tiles separately, so keep entries for other groups' windows and
+        // only drop those whose app has quit; otherwise switching groups re-snaps every time.
+        snappedAutoTileSizesByWindowID = snappedAutoTileSizesByWindowID.filter {
+            NSRunningApplication(processIdentifier: $0.key.processIdentifier) != nil
+        }
 
         let targetScreens = Set(affectedScreenFrames.map(ScreenKey.init))
 
@@ -670,10 +676,11 @@ final class AccessibilityWindowMover {
                                preservesPrimaryWindowPosition: preservesPrimaryWindowPosition)
             skippedWindowCount += layout.skippedWindowCount
 
-            var assignments = forcesEqualThirds ?
+            var unpackedAssignments = forcesEqualThirds ?
                 layout.assignments :
                 adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
                                                            in: screenVisibleFrame)
+            var assignments = assignmentsPackedForSnappedSizes(unpackedAssignments)
             var assignmentsToApply = assignments.filter {
                 !Self.framesMatch($0.window.frame, $0.frame)
             }
@@ -682,11 +689,18 @@ final class AccessibilityWindowMover {
             firstError = firstError ?? writeResult.firstError
             appliedFramesByWindowID.merge(writeResult.appliedFramesByWindowID) { _, new in new }
 
-            if !forcesEqualThirds,
-               rememberMinimumSizeObservations(writeResult.minimumSizeObservations) {
+            let didObserveMinimumSizes = !forcesEqualThirds &&
+                rememberMinimumSizeObservations(writeResult.minimumSizeObservations)
+            let didObserveSnappedSizes = rememberSnappedSizeObservations(writeResult.appliedFramesByWindowID,
+                                                                         unpackedAssignments: unpackedAssignments)
+
+            if didObserveMinimumSizes || didObserveSnappedSizes {
                 let previousTargetFramesByWindowID: [AutoTileWindowID: CGRect] = Dictionary(uniqueKeysWithValues: assignments.map { ($0.window.id, $0.frame) })
-                assignments = adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
-                                                                         in: screenVisibleFrame)
+                unpackedAssignments = forcesEqualThirds ?
+                    layout.assignments :
+                    adjustedAssignmentsForObservedMinimumSizes(layout.assignments,
+                                                               in: screenVisibleFrame)
+                assignments = assignmentsPackedForSnappedSizes(unpackedAssignments)
                 assignmentsToApply = assignments.filter { assignment in
                     guard let previousFrame = previousTargetFramesByWindowID[assignment.window.id] else {
                         return true
@@ -699,6 +713,8 @@ final class AccessibilityWindowMover {
                 firstError = firstError ?? writeResult.firstError
                 appliedFramesByWindowID.merge(writeResult.appliedFramesByWindowID) { _, new in new }
                 _ = rememberMinimumSizeObservations(writeResult.minimumSizeObservations)
+                _ = rememberSnappedSizeObservations(writeResult.appliedFramesByWindowID,
+                                                    unpackedAssignments: unpackedAssignments)
             }
         }
 
@@ -826,6 +842,127 @@ final class AccessibilityWindowMover {
         }
 
         return didChange
+    }
+
+    /// Windows such as Terminal snap their size down to whole character cells, so they
+    /// accept a slightly smaller frame than requested. Remember that accepted size per
+    /// requested size so rows can be packed edge to edge.
+    @discardableResult
+    private func rememberSnappedSizeObservations(_ finalFramesByWindowID: [AutoTileWindowID: CGRect],
+                                                 unpackedAssignments: [(window: AutoTileWindow, frame: CGRect)]) -> Bool {
+        var didChange = false
+
+        for assignment in unpackedAssignments {
+            guard let finalFrame = finalFramesByWindowID[assignment.window.id] else {
+                continue
+            }
+
+            let requestedSize = assignment.frame.size
+            let isNarrower = finalFrame.width < requestedSize.width - 1
+            let isShorter = finalFrame.height < requestedSize.height - 1
+            guard isNarrower || isShorter,
+                  finalFrame.width <= requestedSize.width + 1,
+                  finalFrame.height <= requestedSize.height + 1 else {
+                continue
+            }
+
+            if let existing = snappedAutoTileSizesByWindowID[assignment.window.id],
+               Self.sizesMatch(existing.requestedSize, requestedSize),
+               Self.sizesMatch(existing.acceptedSize, finalFrame.size) {
+                continue
+            }
+
+            snappedAutoTileSizesByWindowID[assignment.window.id] = (requestedSize, finalFrame.size)
+            didChange = true
+        }
+
+        return didChange
+    }
+
+    private func snappedSize(for assignment: (window: AutoTileWindow, frame: CGRect)) -> CGSize? {
+        guard let snapped = snappedAutoTileSizesByWindowID[assignment.window.id],
+              Self.sizesMatch(snapped.requestedSize, assignment.frame.size) else {
+            return nil
+        }
+
+        return snapped.acceptedSize
+    }
+
+    private func assignmentsPackedForSnappedSizes(_ assignments: [(window: AutoTileWindow, frame: CGRect)]) -> [(window: AutoTileWindow, frame: CGRect)] {
+        guard assignments.contains(where: { snappedSize(for: $0) != nil }) else {
+            return assignments
+        }
+
+        let rows = visualRows(from: assignments)
+        let packedRows = rows.map(horizontallyPackedRowForSnappedSizes)
+        let isStacked = rows.count > 1 && zip(rows, rows.dropFirst()).allSatisfy { upperRow, lowerRow in
+            abs(Self.rowMaxY(upperRow) - Self.rowMinY(lowerRow)) <= 2
+        }
+        guard isStacked,
+              let firstRow = rows.first,
+              let lastRow = rows.last else {
+            return packedRows.flatMap { $0 }
+        }
+
+        let minY = Self.rowMinY(firstRow)
+        let rowHeights = rows.map { row in
+            row.map { (snappedSize(for: $0) ?? $0.frame.size).height }.max() ?? 0
+        }
+        let leftover = (Self.rowMaxY(lastRow) - minY) - rowHeights.reduce(0, +)
+        guard leftover > 1 else {
+            return packedRows.flatMap { $0 }
+        }
+
+        // Stack rows flush against each other and split the leftover between the top and bottom edges.
+        var y = minY + (leftover / 2).rounded(.down)
+
+        return zip(packedRows, rowHeights).flatMap { row, rowHeight -> [(window: AutoTileWindow, frame: CGRect)] in
+            let rowY = y
+            y += rowHeight
+
+            return row.map { assignment in
+                var frame = assignment.frame
+                frame.origin.y = rowY
+                return (window: assignment.window, frame: frame)
+            }
+        }
+    }
+
+    private func horizontallyPackedRowForSnappedSizes(_ row: [(window: AutoTileWindow, frame: CGRect)]) -> [(window: AutoTileWindow, frame: CGRect)] {
+        let isContiguous = zip(row, row.dropFirst()).allSatisfy { abs($0.frame.maxX - $1.frame.minX) <= 2 }
+        guard row.count > 1,
+              isContiguous,
+              let minX = row.first?.frame.minX,
+              let maxX = row.last?.frame.maxX else {
+            return row
+        }
+
+        let sizes = row.map { snappedSize(for: $0) ?? $0.frame.size }
+        let leftover = (maxX - minX) - sizes.map(\.width).reduce(0, +)
+        guard leftover > 1 else {
+            return row
+        }
+
+        // Keep windows flush against each other and split the leftover between the outer edges.
+        var x = minX + (leftover / 2).rounded(.down)
+
+        return zip(row, sizes).map { assignment, size in
+            let frame = CGRect(x: x,
+                               y: assignment.frame.minY,
+                               width: size.width,
+                               height: size.height)
+            x += size.width
+
+            return (window: assignment.window, frame: frame)
+        }
+    }
+
+    private static func rowMinY(_ row: [(window: AutoTileWindow, frame: CGRect)]) -> CGFloat {
+        row.map(\.frame.minY).min() ?? 0
+    }
+
+    private static func rowMaxY(_ row: [(window: AutoTileWindow, frame: CGRect)]) -> CGFloat {
+        row.map(\.frame.maxY).max() ?? 0
     }
 
     private func adjustedAssignmentsForObservedMinimumSizes(_ assignments: [(window: AutoTileWindow, frame: CGRect)],
@@ -1873,8 +2010,10 @@ final class AccessibilityWindowMover {
             let skippedWindowCount = max(0, windows.count - tiledWindows.count)
             let assignments: [(window: AutoTileWindow, frame: CGRect)]
 
+            // From 4 windows on, use the plain grid (2×2, then 3×2) instead of overlaying the second window.
             if ignoresSecondAppInList,
-               ignoredSecondWindowStartMode == .normalStart {
+               ignoredSecondWindowStartMode == .normalStart,
+               tiledWindows.count < 4 {
                 assignments = fullScreenGridAssignmentsIgnoringSecondWindow(for: tiledWindows,
                                                                             in: screenVisibleFrame,
                                                                             maximumColumnCount: maximumColumnCount,
@@ -2051,8 +2190,10 @@ final class AccessibilityWindowMover {
             let skippedWindowCount = max(0, windows.count - tiledWindows.count)
             let assignments: [(window: AutoTileWindow, frame: CGRect)]
 
+            // From 4 windows on, use the plain grid (2×2, then 3×2) instead of overlaying the second window.
             if ignoresSecondAppInList,
-               ignoredSecondWindowStartMode == .normalStart {
+               ignoredSecondWindowStartMode == .normalStart,
+               tiledWindows.count < 4 {
                 assignments = fullScreenGridAssignmentsIgnoringSecondWindow(for: tiledWindows,
                                                                             in: screenVisibleFrame,
                                                                             maximumColumnCount: maximumColumnCount,
@@ -2596,9 +2737,16 @@ final class AccessibilityWindowMover {
             normalizedMaximumColumnCount
         let limitedCount = min(count, Self.maximumAutoTileWindows(for: normalizedMaximumColumnCount))
         let preferredCenterColumnCount = min(3, effectiveMaximumColumnCount)
-        let columnCount = tileDirection == .centerOut ?
-            min(max(limitedCount, preferredCenterColumnCount), effectiveMaximumColumnCount) :
-            min(limitedCount, effectiveMaximumColumnCount)
+        let columnCount: Int
+        if limitedCount > effectiveMaximumColumnCount {
+            // Once windows wrap onto several rows, balance the columns (4 → 2×2, 5–6 → 3×2).
+            let wrappedRowCount = Int(ceil(Double(limitedCount) / Double(effectiveMaximumColumnCount)))
+            columnCount = Int(ceil(Double(limitedCount) / Double(wrappedRowCount)))
+        } else if tileDirection == .centerOut {
+            columnCount = min(max(limitedCount, preferredCenterColumnCount), effectiveMaximumColumnCount)
+        } else {
+            columnCount = limitedCount
+        }
         let rowCount = Int(ceil(Double(limitedCount) / Double(columnCount)))
         let xEdges = partitionEdges(from: availableFrame.minX,
                                     to: availableFrame.maxX,
@@ -2747,3 +2895,4 @@ private extension AXError {
         }
     }
 }
+
