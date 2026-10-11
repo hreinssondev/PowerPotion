@@ -295,6 +295,11 @@ final class CoolAeidStatusBarController: NSObject, NSPopoverDelegate {
         )
         super.init()
 
+        // Allow ⌘-dragging the item out of the menu bar. Reopening the app
+        // (Finder, Spotlight, Dock) restores it via showMenu().
+        statusItem.autosaveName = "CoolAeid.StatusItem"
+        statusItem.behavior = .removalAllowed
+
         if let button = statusItem.button {
             applyMenuBarIcon()
             button.action = #selector(togglePopover(_:))
@@ -322,6 +327,15 @@ final class CoolAeidStatusBarController: NSObject, NSPopoverDelegate {
     }
 
     func showMenu() {
+        guard statusItem.isVisible else {
+            statusItem.isVisible = true
+            // Let the menu bar lay out the restored button before anchoring the popover.
+            DispatchQueue.main.async { [weak self] in
+                self?.showMenu()
+            }
+            return
+        }
+
         guard let button = statusItem.button else {
             return
         }
