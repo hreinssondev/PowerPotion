@@ -158,7 +158,26 @@ final class WindowBuddyModel: ObservableObject {
             statusMessage = showsDockIcon ? "Dock icon is visible." : "WindowBuddy is menu bar only."
         }
     }
+    @Published var cyclesMinimizedAppWindows: Bool {
+        didSet {
+            userDefaults.set(cyclesMinimizedAppWindows, forKey: Self.cyclesMinimizedAppWindowsDefaultsKey)
+            statusMessage = cyclesMinimizedAppWindows ?
+                "Window cycling restores minimized windows." :
+                "Window cycling skips minimized windows."
+        }
+    }
+
+    @Published var hidesFrontmostAppOnDockClick: Bool {
+        didSet {
+            userDefaults.set(hidesFrontmostAppOnDockClick, forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey)
+            statusMessage = hidesFrontmostAppOnDockClick ?
+                "Clicking the active app's Dock icon hides it." :
+                "Dock clicks use the standard behavior."
+        }
+    }
+
     @Published private(set) var settingsShortcut: DockMoverShortcut
+    @Published private(set) var cycleAppWindowsShortcut: DockMoverShortcut
     @Published private(set) var focusGroupsForwardShortcut: DockMoverShortcut
     @Published private(set) var focusGroupsBackwardShortcut: DockMoverShortcut
     @Published private(set) var focusGroupOnePhysicalKey: FocusGroupPhysicalKey
@@ -196,6 +215,9 @@ final class WindowBuddyModel: ObservableObject {
     private static let switchesAwayFromSingleAppFocusGroupsDefaultsKey = "switchesAwayFromSingleAppFocusGroups"
     private static let showsDockIconDefaultsKey = "showsDockIcon"
     private static let settingsShortcutDefaultsKey = "windowBuddySettingsShortcut"
+    private static let cycleAppWindowsShortcutDefaultsKey = "cycleAppWindowsShortcut"
+    private static let cyclesMinimizedAppWindowsDefaultsKey = "cyclesMinimizedAppWindows"
+    private static let hidesFrontmostAppOnDockClickDefaultsKey = "hidesFrontmostAppOnDockClick"
     private static let focusGroupsForwardShortcutDefaultsKey = "focusGroupsForwardShortcut"
     private static let focusGroupsBackwardShortcutDefaultsKey = "focusGroupsBackwardShortcut"
     private static let focusGroupOnePhysicalKeyDefaultsKey = "focusGroupOnePhysicalKeyCode"
@@ -389,9 +411,19 @@ final class WindowBuddyModel: ObservableObject {
         } else {
             showsDockIcon = userDefaults.bool(forKey: Self.showsDockIconDefaultsKey)
         }
+        cyclesMinimizedAppWindows = userDefaults.bool(forKey: Self.cyclesMinimizedAppWindowsDefaultsKey)
+
+        if userDefaults.object(forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey) == nil {
+            hidesFrontmostAppOnDockClick = true
+        } else {
+            hidesFrontmostAppOnDockClick = userDefaults.bool(forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey)
+        }
         settingsShortcut = Self.storedShortcut(in: userDefaults,
                                                key: Self.settingsShortcutDefaultsKey,
                                                defaultShortcut: .windowBuddySettingsDefault)
+        cycleAppWindowsShortcut = Self.storedShortcut(in: userDefaults,
+                                                      key: Self.cycleAppWindowsShortcutDefaultsKey,
+                                                      defaultShortcut: .cycleAppWindowsDefault)
         focusGroupsForwardShortcut = Self.storedShortcut(in: userDefaults,
                                                          key: Self.focusGroupsForwardShortcutDefaultsKey,
                                                          defaultShortcut: .focusGroupsForwardDefault)
@@ -792,6 +824,28 @@ final class WindowBuddyModel: ObservableObject {
         settingsShortcut = shortcut
         persistShortcut(shortcut, key: Self.settingsShortcutDefaultsKey)
         statusMessage = "Settings shortcut saved as \(shortcut.displayText)."
+    }
+
+    func setCycleAppWindowsShortcut(_ shortcut: DockMoverShortcut) {
+        cycleAppWindowsShortcut = shortcut
+        persistShortcut(shortcut, key: Self.cycleAppWindowsShortcutDefaultsKey)
+        statusMessage = "Cycle windows shortcut saved as \(shortcut.displayText)."
+    }
+
+    func cycleFrontmostAppWindows() {
+        accessibilityGranted = AXIsProcessTrusted()
+
+        guard accessibilityGranted else {
+            statusMessage = "Grant Accessibility permission before cycling windows."
+            return
+        }
+
+        do {
+            let applicationName = try mover.focusNextWindow(includingMinimized: cyclesMinimizedAppWindows)
+            statusMessage = "Cycled to the next \(applicationName) window."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     func setFocusGroupsForwardShortcut(_ shortcut: DockMoverShortcut) {

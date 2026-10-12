@@ -197,11 +197,65 @@ struct WindowBuddySettingsView: View {
                     Label("Behavior", systemImage: "switch.2")
                         .font(.headline)
                 }
+
+                appWindowsSection
             }
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var appWindowsSection: some View {
+        GroupBox {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Label("Cycle App Windows", systemImage: "macwindow.on.rectangle")
+
+                    Spacer(minLength: 20)
+
+                    ShortcutRecorder(shortcut: model.cycleAppWindowsShortcut) { shortcut in
+                        model.setCycleAppWindowsShortcut(shortcut)
+                    }
+                    .frame(width: 184, height: 32)
+                    .help("Click, press shortcut, then press Enter to save")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                InspectorToggleRow(title: "Include Minimized Windows",
+                                   systemImage: "arrow.down.right.and.arrow.up.left",
+                                   isOn: $model.cyclesMinimizedAppWindows)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 12) {
+                        Label("Click Dock Icon to Hide", systemImage: "eye.slash")
+
+                        Spacer(minLength: 20)
+
+                        Toggle("", isOn: $model.hidesFrontmostAppOnDockClick)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .focusable(false)
+                    }
+
+                    Text("Clicking the Dock icon of the app you are using hides it. Click it again to bring it back. Hold any modifier key for the standard Dock click.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+            }
+            .padding(.vertical, 2)
+        } label: {
+            Label("App Windows", systemImage: "macwindow")
+                .font(.headline)
+        }
     }
 
     private var tilingDetail: some View {

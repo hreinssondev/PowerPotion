@@ -270,7 +270,7 @@ final class AccessibilityWindowMover {
                                          didFillScreen: shouldFillScreen)
     }
 
-    func focusNextWindow() throws -> String {
+    func focusNextWindow(includingMinimized: Bool = false) throws -> String {
         guard AXIsProcessTrusted() else {
             throw WindowMoveError.accessibilityNotTrusted
         }
@@ -281,15 +281,25 @@ final class AccessibilityWindowMover {
 
         let applicationName = application.localizedName ?? "Frontmost app"
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        let currentWindow = try focusedWindow(for: applicationElement, applicationName: applicationName)
-        let windows = try windows(for: applicationElement, applicationName: applicationName)
+        let standardWindows = allWindows(for: applicationElement).filter(isStandardWindow)
+        let visibleWindows = standardWindows.filter { !isMinimized($0) }
+        let minimizedWindows = includingMinimized ? standardWindows.filter(isMinimized) : []
+        let candidates = visibleWindows + minimizedWindows
 
-        guard windows.count > 1 else {
+        // AX lists windows front to back, so raising the backmost candidate
+        // walks through every window in turn (like Cmd+`) instead of bouncing
+        // between the top two.
+        guard candidates.count > 1,
+              let nextWindow = candidates.last else {
             throw WindowMoveError.noNextWindow(applicationName)
         }
 
-        let currentIndex = windows.firstIndex { CFEqual($0, currentWindow) } ?? -1
-        let nextWindow = windows[(currentIndex + 1) % windows.count]
+        if isMinimized(nextWindow) {
+            AXUIElementSetAttributeValue(nextWindow,
+                                         kAXMinimizedAttribute as CFString,
+                                         kCFBooleanFalse)
+        }
+
         let raiseError = AXUIElementPerformAction(nextWindow, kAXRaiseAction as CFString)
         let focusError = AXUIElementSetAttributeValue(applicationElement,
                                                      kAXFocusedWindowAttribute as CFString,

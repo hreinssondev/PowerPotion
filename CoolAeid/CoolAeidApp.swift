@@ -23,10 +23,13 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
     private let dockMoverSettingsPresenter: DockMoverSettingsWindowPresenter
     private let windowBuddySettingsPresenter: WindowBuddySettingsWindowPresenter
     private let finderLastWindowHider: FinderLastWindowHider
+    private let dockClickAppHider: DockClickAppHider
     private var windowBuddyHotKeyController: WindowBuddyHotKeyController?
     private var windowBuddySettingsShortcutCancellable: AnyCancellable?
     private var windowBuddyShortcutCancellable: AnyCancellable?
     private var windowBuddyPhysicalKeyCancellable: AnyCancellable?
+    private var cycleAppWindowsShortcutCancellable: AnyCancellable?
+    private var dockClickAppHiderCancellable: AnyCancellable?
     private var statusBarController: CoolAeidStatusBarController?
 
     override init() {
@@ -38,6 +41,7 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
         dockMoverSettingsPresenter = DockMoverSettingsWindowPresenter()
         windowBuddySettingsPresenter = WindowBuddySettingsWindowPresenter()
         finderLastWindowHider = FinderLastWindowHider()
+        dockClickAppHider = DockClickAppHider()
         super.init()
     }
 
@@ -49,6 +53,7 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
 
         configureWindowBuddyHotKeys()
         finderLastWindowHider.start()
+        configureDockClickAppHider()
         windowBuddyModel.start()
 
         statusBarController = CoolAeidStatusBarController(
@@ -69,10 +74,15 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         windowBuddyHotKeyController?.start()
+        if windowBuddyModel.hidesFrontmostAppOnDockClick {
+            // The event tap can only be created once Accessibility is granted.
+            dockClickAppHider.start()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         windowBuddyHotKeyController?.stop()
+        dockClickAppHider.stop()
     }
 
     private static func exitIfThisIsASecondaryInstance() {
@@ -128,11 +138,14 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
                 windowBuddyModel.toggleFocusGroups(number: 2)
             case .toggleSecondaryFocusGroupsBackward:
                 windowBuddyModel.toggleFocusGroups(reverse: true, number: 2)
+            case .cycleFrontmostAppWindows:
+                windowBuddyModel.cycleFrontmostAppWindows()
             case .openSettings:
                 openWindowBuddySettings()
             }
         }
         hotKeyController.settingsShortcut = windowBuddyModel.settingsShortcut
+        hotKeyController.cycleAppWindowsShortcut = windowBuddyModel.cycleAppWindowsShortcut
         hotKeyController.focusGroupsForwardShortcut = windowBuddyModel.focusGroupsForwardShortcut
         hotKeyController.focusGroupsBackwardShortcut = windowBuddyModel.focusGroupsBackwardShortcut
         hotKeyController.updateFocusGroupPhysicalKeys(groupOne: windowBuddyModel.focusGroupOnePhysicalKey,
@@ -142,6 +155,11 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
             .dropFirst()
             .sink { [weak hotKeyController] settingsShortcut in
                 hotKeyController?.updateSettingsShortcut(settingsShortcut)
+            }
+        cycleAppWindowsShortcutCancellable = windowBuddyModel.$cycleAppWindowsShortcut
+            .dropFirst()
+            .sink { [weak hotKeyController] shortcut in
+                hotKeyController?.updateCycleAppWindowsShortcut(shortcut)
             }
         windowBuddyShortcutCancellable = Publishers.CombineLatest(
             windowBuddyModel.$focusGroupsForwardShortcut,
@@ -162,6 +180,21 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
                                                            groupTwo: groupTwoKey)
         }
         windowBuddyHotKeyController = hotKeyController
+    }
+
+    private func configureDockClickAppHider() {
+        dockClickAppHiderCancellable = windowBuddyModel.$hidesFrontmostAppOnDockClick
+            .sink { [weak self] isEnabled in
+                guard let self else {
+                    return
+                }
+
+                if isEnabled {
+                    dockClickAppHider.start()
+                } else {
+                    dockClickAppHider.stop()
+                }
+            }
     }
 
     private func openDockMoverSettings() {
@@ -529,6 +562,7 @@ enum WindowBuddyHotKeyAction {
     case toggleFocusGroupsBackward
     case toggleSecondaryFocusGroupsForward
     case toggleSecondaryFocusGroupsBackward
+    case cycleFrontmostAppWindows
     case openSettings
 }
 
@@ -550,6 +584,7 @@ private final class WindowBuddyHotKeyController {
         case physicalFocusGroupsBackward = 12
         case physicalSecondaryFocusGroupsForward = 13
         case physicalSecondaryFocusGroupsBackward = 14
+        case cycleFrontmostAppWindows = 15
         case openSettings = 8
 
         var action: WindowBuddyHotKeyAction {
@@ -570,6 +605,8 @@ private final class WindowBuddyHotKeyController {
                 .toggleSecondaryFocusGroupsForward
             case .toggleSecondaryFocusGroupsBackward, .physicalSecondaryFocusGroupsBackward:
                 .toggleSecondaryFocusGroupsBackward
+            case .cycleFrontmostAppWindows:
+                .cycleFrontmostAppWindows
             case .openSettings:
                 .openSettings
             }
@@ -585,6 +622,7 @@ private final class WindowBuddyHotKeyController {
     private var focusGroupOnePhysicalKey: FocusGroupPhysicalKey = .groupOneDefault
     private var focusGroupTwoPhysicalKey: FocusGroupPhysicalKey = .groupTwoDefault
     var settingsShortcut: DockMoverShortcut = .windowBuddySettingsDefault
+    var cycleAppWindowsShortcut: DockMoverShortcut = .cycleAppWindowsDefault
     var focusGroupsForwardShortcut: DockMoverShortcut = .focusGroupsForwardDefault
     var focusGroupsBackwardShortcut: DockMoverShortcut = .focusGroupsBackwardDefault
 
@@ -678,6 +716,17 @@ private final class WindowBuddyHotKeyController {
         restartRegistrationReconciliation()
     }
 
+    func updateCycleAppWindowsShortcut(_ shortcut: DockMoverShortcut) {
+        cycleAppWindowsShortcut = shortcut
+
+        guard eventHandler != nil else {
+            return
+        }
+
+        unregisterHotKey(identifier: .cycleFrontmostAppWindows)
+        restartRegistrationReconciliation()
+    }
+
     func updateFocusGroupShortcuts(forward: DockMoverShortcut,
                                    backward: DockMoverShortcut) {
         focusGroupsForwardShortcut = forward
@@ -737,6 +786,8 @@ private final class WindowBuddyHotKeyController {
                                identifier: .toggleSecondaryFocusGroupsForward)
         registerHotKeyIfNeeded(.secondaryFocusGroupsBackwardDefault,
                                identifier: .toggleSecondaryFocusGroupsBackward)
+        registerHotKeyIfNeeded(cycleAppWindowsShortcut,
+                               identifier: .cycleFrontmostAppWindows)
         registerHotKeyIfNeeded(settingsShortcut,
                                identifier: .openSettings)
         registerPhysicalFocusGroupHotKeys()

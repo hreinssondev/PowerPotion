@@ -31,6 +31,11 @@ struct DockMoverShortcut: Codable, Equatable {
         modifiers: [.command, .shift, .option]
     )
 
+    static let cycleAppWindowsDefault = DockMoverShortcut(
+        keyCode: UInt16(kVK_ANSI_Grave),
+        modifiers: [.option]
+    )
+
     private static let supportedModifiers: NSEvent.ModifierFlags = [
         .command,
         .shift,
