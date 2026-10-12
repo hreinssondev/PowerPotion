@@ -167,15 +167,6 @@ final class WindowBuddyModel: ObservableObject {
         }
     }
 
-    @Published var hidesFrontmostAppOnDockClick: Bool {
-        didSet {
-            userDefaults.set(hidesFrontmostAppOnDockClick, forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey)
-            statusMessage = hidesFrontmostAppOnDockClick ?
-                "Clicking the active app's Dock icon hides it." :
-                "Dock clicks use the standard behavior."
-        }
-    }
-
     @Published private(set) var settingsShortcut: DockMoverShortcut
     @Published private(set) var cycleAppWindowsShortcut: DockMoverShortcut
     @Published private(set) var focusGroupsForwardShortcut: DockMoverShortcut
@@ -217,7 +208,6 @@ final class WindowBuddyModel: ObservableObject {
     private static let settingsShortcutDefaultsKey = "windowBuddySettingsShortcut"
     private static let cycleAppWindowsShortcutDefaultsKey = "cycleAppWindowsShortcut"
     private static let cyclesMinimizedAppWindowsDefaultsKey = "cyclesMinimizedAppWindows"
-    private static let hidesFrontmostAppOnDockClickDefaultsKey = "hidesFrontmostAppOnDockClick"
     private static let focusGroupsForwardShortcutDefaultsKey = "focusGroupsForwardShortcut"
     private static let focusGroupsBackwardShortcutDefaultsKey = "focusGroupsBackwardShortcut"
     private static let focusGroupOnePhysicalKeyDefaultsKey = "focusGroupOnePhysicalKeyCode"
@@ -412,12 +402,6 @@ final class WindowBuddyModel: ObservableObject {
             showsDockIcon = userDefaults.bool(forKey: Self.showsDockIconDefaultsKey)
         }
         cyclesMinimizedAppWindows = userDefaults.bool(forKey: Self.cyclesMinimizedAppWindowsDefaultsKey)
-
-        if userDefaults.object(forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey) == nil {
-            hidesFrontmostAppOnDockClick = true
-        } else {
-            hidesFrontmostAppOnDockClick = userDefaults.bool(forKey: Self.hidesFrontmostAppOnDockClickDefaultsKey)
-        }
         settingsShortcut = Self.storedShortcut(in: userDefaults,
                                                key: Self.settingsShortcutDefaultsKey,
                                                defaultShortcut: .windowBuddySettingsDefault)

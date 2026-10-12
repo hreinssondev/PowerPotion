@@ -228,28 +228,6 @@ struct WindowBuddySettingsView: View {
                 InspectorToggleRow(title: "Include Minimized Windows",
                                    systemImage: "arrow.down.right.and.arrow.up.left",
                                    isOn: $model.cyclesMinimizedAppWindows)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 12) {
-                        Label("Click Dock Icon to Hide", systemImage: "eye.slash")
-
-                        Spacer(minLength: 20)
-
-                        Toggle("", isOn: $model.hidesFrontmostAppOnDockClick)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .focusable(false)
-                    }
-
-                    Text("Clicking the Dock icon of the app you are using hides it. Click it again to bring it back. Hold any modifier key for the standard Dock click.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 9)
             }
             .padding(.vertical, 2)
         } label: {

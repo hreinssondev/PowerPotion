@@ -23,13 +23,11 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
     private let dockMoverSettingsPresenter: DockMoverSettingsWindowPresenter
     private let windowBuddySettingsPresenter: WindowBuddySettingsWindowPresenter
     private let finderLastWindowHider: FinderLastWindowHider
-    private let dockClickAppHider: DockClickAppHider
     private var windowBuddyHotKeyController: WindowBuddyHotKeyController?
     private var windowBuddySettingsShortcutCancellable: AnyCancellable?
     private var windowBuddyShortcutCancellable: AnyCancellable?
     private var windowBuddyPhysicalKeyCancellable: AnyCancellable?
     private var cycleAppWindowsShortcutCancellable: AnyCancellable?
-    private var dockClickAppHiderCancellable: AnyCancellable?
     private var statusBarController: CoolAeidStatusBarController?
 
     override init() {
@@ -41,7 +39,6 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
         dockMoverSettingsPresenter = DockMoverSettingsWindowPresenter()
         windowBuddySettingsPresenter = WindowBuddySettingsWindowPresenter()
         finderLastWindowHider = FinderLastWindowHider()
-        dockClickAppHider = DockClickAppHider()
         super.init()
     }
 
@@ -53,7 +50,6 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
 
         configureWindowBuddyHotKeys()
         finderLastWindowHider.start()
-        configureDockClickAppHider()
         windowBuddyModel.start()
 
         statusBarController = CoolAeidStatusBarController(
@@ -74,15 +70,10 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         windowBuddyHotKeyController?.start()
-        if windowBuddyModel.hidesFrontmostAppOnDockClick {
-            // The event tap can only be created once Accessibility is granted.
-            dockClickAppHider.start()
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         windowBuddyHotKeyController?.stop()
-        dockClickAppHider.stop()
     }
 
     private static func exitIfThisIsASecondaryInstance() {
@@ -180,21 +171,6 @@ final class CoolAeidAppDelegate: NSObject, NSApplicationDelegate {
                                                            groupTwo: groupTwoKey)
         }
         windowBuddyHotKeyController = hotKeyController
-    }
-
-    private func configureDockClickAppHider() {
-        dockClickAppHiderCancellable = windowBuddyModel.$hidesFrontmostAppOnDockClick
-            .sink { [weak self] isEnabled in
-                guard let self else {
-                    return
-                }
-
-                if isEnabled {
-                    dockClickAppHider.start()
-                } else {
-                    dockClickAppHider.stop()
-                }
-            }
     }
 
     private func openDockMoverSettings() {
